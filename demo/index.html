@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="zh">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Three.js WebGPU Demo</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <aside id="sidebar">
+        <h2>Scenes</h2>
+        <ul id="scene-list">
+          <li data-scene="crt" class="active">CRT Screen</li>
+          <li data-scene="bioluminescence">Bioluminescence</li>
+          <li data-scene="planet">Planet</li>
+          <li data-scene="froxel">Froxel Fog</li>
+          <li data-scene="ascii">ASCII Material</li>
+          <li data-scene="voxel">Voxel Worker</li>
+        </ul>
+      </aside>
+      <main id="main">
+        <canvas id="canvas"></canvas>
+      </main>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
