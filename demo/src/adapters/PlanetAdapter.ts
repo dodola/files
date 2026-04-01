@@ -1,14 +1,22 @@
+import { WebGPURenderer } from 'three/webgpu';
 import type { Pane } from 'tweakpane';
 import type { IScene } from '../IScene';
 import { PlanetScene } from '../scenes/PlanetScene';
 
 export class PlanetAdapter implements IScene {
   private scene: PlanetScene | null = null;
+  private renderer: WebGPURenderer | null = null;
   private rafId: number | null = null;
 
   async mount(canvas: HTMLCanvasElement): Promise<void> {
+    const width = canvas.clientWidth || window.innerWidth;
+    const height = canvas.clientHeight || window.innerHeight;
+    this.renderer = new WebGPURenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    this.renderer.setSize(width, height);
+    await this.renderer.init();
     this.scene = new PlanetScene();
-    await this.scene.init(canvas);
+    await this.scene.init(canvas, this.renderer);
     this.startLoop();
   }
 
@@ -25,7 +33,9 @@ export class PlanetAdapter implements IScene {
   dispose(): void {
     if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.scene?.cleanup();
+    this.renderer?.dispose();
     this.scene = null;
+    this.renderer = null;
   }
 
   buildPane(pane: Pane): void {

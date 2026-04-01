@@ -18,9 +18,8 @@ export class CRTSceneAdapter implements IScene {
     this.renderer.setSize(width, height);
     await this.renderer.init();
 
-    this.scene = new CRTScreenScene();
+    this.scene = new CRTScreenScene({ shaderType: 'mandelbrot', displayMode: 'shader' });
     await this.scene.init(canvas, this.renderer);
-    this.scene.updateParameters({ shaderType: 'mandelbrot', displayMode: 'shader' });
 
     this.startLoop();
   }
@@ -31,6 +30,7 @@ export class CRTSceneAdapter implements IScene {
       const dt = (time - this.lastTime) / 1000;
       this.lastTime = time;
       this.scene.update(dt);
+      this.scene.render();
       this.rafId = requestAnimationFrame(loop);
     };
     this.rafId = requestAnimationFrame((t) => {

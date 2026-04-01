@@ -71,8 +71,8 @@ export class AsciiMaterialAdapter implements IScene {
     const width = canvas.clientWidth || window.innerWidth;
     const height = canvas.clientHeight || window.innerHeight;
 
-    this.renderer = new WebGPURenderer({ canvas, antialias: false });
-    this.renderer.setPixelRatio(1);
+    this.renderer = new WebGPURenderer({ canvas, antialias: true });
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(width, height);
     await this.renderer.init();
 

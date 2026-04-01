@@ -8,10 +8,11 @@ type OutboundMessage =
 
 export class VoxelWorkerAdapter implements IScene {
   private worker: Worker | null = null;
-  private canvas: HTMLCanvasElement | null = null;
+  private overlay: HTMLCanvasElement | null = null;
   private ctx: CanvasRenderingContext2D | null = null;
   private paths: number[][] = [];
   private jobId = 0;
+  private rafId: number | null = null;
 
   private gridParams = {
     countX: 20,
@@ -22,8 +23,18 @@ export class VoxelWorkerAdapter implements IScene {
   };
 
   async mount(canvas: HTMLCanvasElement): Promise<void> {
-    this.canvas = canvas;
-    this.ctx = canvas.getContext('2d');
+    // Create a 2D overlay canvas on top of the WebGPU canvas
+    this.overlay = document.createElement('canvas');
+    this.overlay.style.position = 'absolute';
+    this.overlay.style.top = '0';
+    this.overlay.style.left = '0';
+    this.overlay.style.pointerEvents = 'none';
+    this.overlay.width = canvas.clientWidth || canvas.width || window.innerWidth;
+    this.overlay.height = canvas.clientHeight || canvas.height || window.innerHeight;
+    this.overlay.style.width = '100%';
+    this.overlay.style.height = '100%';
+    canvas.parentElement?.appendChild(this.overlay);
+    this.ctx = this.overlay.getContext('2d');
 
     this.worker = new Worker(
       new URL('../scenes/voxelPathfindingWorker.ts', import.meta.url),
@@ -86,9 +97,9 @@ export class VoxelWorkerAdapter implements IScene {
   }
 
   private draw(): void {
-    if (!this.ctx || !this.canvas) return;
-    const w = this.canvas.width;
-    const h = this.canvas.height;
+    if (!this.ctx || !this.overlay) return;
+    const w = this.overlay.width;
+    const h = this.overlay.height;
     const { countX, countZ } = this.gridParams;
     this.ctx.fillStyle = '#111';
     this.ctx.fillRect(0, 0, w, h);
@@ -139,9 +150,13 @@ export class VoxelWorkerAdapter implements IScene {
   }
 
   dispose(): void {
+    if (this.rafId !== null) cancelAnimationFrame(this.rafId);
     this.worker?.terminate();
     this.worker = null;
-    this.canvas = null;
+    if (this.overlay && this.overlay.parentElement) {
+      this.overlay.parentElement.removeChild(this.overlay);
+    }
+    this.overlay = null;
     this.ctx = null;
     this.paths = [];
   }
@@ -155,9 +170,9 @@ export class VoxelWorkerAdapter implements IScene {
   }
 
   onResize(width: number, height: number): void {
-    if (!this.canvas) return;
-    this.canvas.width = width;
-    this.canvas.height = height;
+    if (!this.overlay) return;
+    this.overlay.width = width;
+    this.overlay.height = height;
     this.draw();
   }
 }

@@ -3,59 +3,13 @@
 html, body { height: 100%; overflow: hidden; }
 
 #app {
-  display: flex;
   height: 100vh;
-  background: #0a0a0a;
-  color: #e0e0e0;
-  font-family: system-ui, sans-serif;
-}
-
-#sidebar {
-  width: 200px;
-  flex-shrink: 0;
-  padding: 16px 0;
-  background: #111;
-  border-right: 1px solid #222;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-#sidebar h2 {
-  font-size: 11px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: #666;
-  padding: 0 16px 8px;
-  border-bottom: 1px solid #222;
-}
-
-#scene-list {
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-}
-
-#scene-list li {
-  padding: 10px 16px;
-  cursor: pointer;
-  font-size: 13px;
-  color: #aaa;
-  border-left: 2px solid transparent;
-  transition: background 0.1s, color 0.1s;
-}
-
-#scene-list li:hover { background: #1a1a1a; color: #fff; }
-
-#scene-list li.active {
-  color: #fff;
-  border-left-color: #4a9eff;
-  background: #1a1a1a;
+  background: #000;
 }
 
 #main {
-  flex: 1;
+  width: 100%;
+  height: 100%;
   position: relative;
   overflow: hidden;
 }

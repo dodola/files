@@ -52,6 +52,7 @@ import { BIOLUMINESCENCE_SCENE_DEFAULTS, type BioluminescenceSceneParameters } f
 
 export class BioluminescenceScene {
   private renderer: WebGPURenderer | null = null;
+  private ownsRenderer = false;
   private scene: THREE.Scene | null = null;
   private camera: THREE.PerspectiveCamera | null = null;
   private controls: OrbitControls | null = null;
@@ -184,7 +185,7 @@ export class BioluminescenceScene {
     ...BIOLUMINESCENCE_SCENE_DEFAULTS
   } as BioluminescenceSceneParameters;
 
-  async init(canvas: HTMLCanvasElement): Promise<void> {
+  async init(canvas: HTMLCanvasElement, externalRenderer?: WebGPURenderer): Promise<void> {
     this.canvas = canvas;
     const width = canvas.clientWidth || canvas.width || window.innerWidth || 1;
     const height = canvas.clientHeight || canvas.height || window.innerHeight || 1;
@@ -196,10 +197,17 @@ export class BioluminescenceScene {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(this.parameters.backgroundColor as string);
 
-    this.renderer = new WebGPURenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(width, height);
-    await this.renderer.init();
+    if (externalRenderer) {
+      this.renderer = externalRenderer;
+      this.ownsRenderer = false;
+      this.renderer.setSize(width, height);
+    } else {
+      this.renderer = new WebGPURenderer({ canvas, antialias: true });
+      this.ownsRenderer = true;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer.setSize(width, height);
+      await this.renderer.init();
+    }
 
     this.controls = new OrbitControls(this.camera, canvas);
     this.controls.enableDamping = true;
@@ -867,7 +875,7 @@ export class BioluminescenceScene {
       (this.volumeWireframe.material as THREE.Material).dispose();
     }
     if (this.postProcessing) this.postProcessing.dispose();
-    if (this.renderer) this.renderer.dispose();
+    if (this.renderer && this.ownsRenderer) this.renderer.dispose();
     if (this.bubbleMesh && this.scene) {
       this.scene.remove(this.bubbleMesh);
     }
@@ -1273,8 +1281,8 @@ export class BioluminescenceScene {
         hash(indexF.mul(float(41.53))).sub(float(0.5))
       ).mul(invRes.mul(fieldJitterScale));
       const uv = clamp(local.add(fieldJitter), halfTexel, maxUv);
-      const velocityA = this.fieldVelocitySamplers[0].sample(uv).xyz;
-      const velocityB = this.fieldVelocitySamplers[1].sample(uv).xyz;
+      const velocityA = texture3D(this.fieldVelocitySamplers[0].value, uv).xyz;
+      const velocityB = texture3D(this.fieldVelocitySamplers[1].value, uv).xyz;
       const useB = this.fieldVelocityIndexUniform.greaterThan(float(0.5));
       const fieldVelocity = select(useB, velocityB, velocityA);
 
@@ -1334,7 +1342,7 @@ export class BioluminescenceScene {
         hash(indexF.mul(float(12.63))).sub(float(0.5))
       ).mul(densityInvRes.mul(jitterScale));
       const densityUv = clamp(local.add(jitter), densityHalfTexel, densityMaxUv);
-      const densityGrad = this.densityGradientSampler.sample(densityUv).xyz;
+      const densityGrad = texture3D(this.densityGradientSampler.value, densityUv).xyz;
       velocity.addAssign(densityGrad.negate().mul(this.particleDensityStrengthUniform).mul(dtMove));
       const dragScale = float(1.0)
         .div(float(1.0).add(this.particleDragUniform.mul(dtMove)));
@@ -1468,7 +1476,7 @@ export class BioluminescenceScene {
           bubbleHalfTexel,
           bubbleMaxUv
         );
-        const bubbleDensityGrad = this.bubbleDensityGradientSampler.sample(bubbleUv).xyz;
+        const bubbleDensityGrad = texture3D(this.bubbleDensityGradientSampler.value, bubbleUv).xyz;
         velX.addAssign(bubbleDensityGrad.x.negate().mul(repelStrength).mul(dt));
         velY.addAssign(bubbleDensityGrad.y.negate().mul(repelStrength).mul(dt));
         velZ.addAssign(bubbleDensityGrad.z.negate().mul(repelStrength).mul(dt));
@@ -2205,13 +2213,13 @@ export class BioluminescenceScene {
         z.toFloat().add(float(0.5)).div(resZ)
       );
 
-      const prevVelocity = velocitySampler.sample(uv).xyz;
+      const prevVelocity = texture3D(velocitySampler.value, uv).xyz;
       const decay = clamp(
         float(1.0).sub(this.fieldDissipationUniform.mul(this.deltaTimeUniform)),
         float(0.0),
         float(1.0)
       );
-      const injection = injectionSampler.sample(uv).xyz;
+      const injection = texture3D(injectionSampler.value, uv).xyz;
       const nextVelocity = prevVelocity
         .add(injection.mul(this.fieldSplatStrengthUniform).mul(this.deltaTimeUniform))
         .mul(decay);
@@ -2253,12 +2261,12 @@ export class BioluminescenceScene {
       const backUv = clamp(uv.sub(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
       const frontUv = clamp(uv.add(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
 
-      const velL = velocitySampler.sample(leftUv).xyz;
-      const velR = velocitySampler.sample(rightUv).xyz;
-      const velD = velocitySampler.sample(downUv).xyz;
-      const velU = velocitySampler.sample(upUv).xyz;
-      const velB = velocitySampler.sample(backUv).xyz;
-      const velF = velocitySampler.sample(frontUv).xyz;
+      const velL = texture3D(velocitySampler.value, leftUv).xyz;
+      const velR = texture3D(velocitySampler.value, rightUv).xyz;
+      const velD = texture3D(velocitySampler.value, downUv).xyz;
+      const velU = texture3D(velocitySampler.value, upUv).xyz;
+      const velB = texture3D(velocitySampler.value, backUv).xyz;
+      const velF = texture3D(velocitySampler.value, frontUv).xyz;
 
       const spacing = vec3(
         resX.div(this.volumeSizeUniform.x),
@@ -2313,13 +2321,13 @@ export class BioluminescenceScene {
       const backUv = clamp(uv.sub(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
       const frontUv = clamp(uv.add(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
 
-      const pL = pressureSampler.sample(leftUv).x;
-      const pR = pressureSampler.sample(rightUv).x;
-      const pD = pressureSampler.sample(downUv).x;
-      const pU = pressureSampler.sample(upUv).x;
-      const pB = pressureSampler.sample(backUv).x;
-      const pF = pressureSampler.sample(frontUv).x;
-      const div = divergenceSampler.sample(uv).x;
+      const pL = texture3D(pressureSampler.value, leftUv).x;
+      const pR = texture3D(pressureSampler.value, rightUv).x;
+      const pD = texture3D(pressureSampler.value, downUv).x;
+      const pU = texture3D(pressureSampler.value, upUv).x;
+      const pB = texture3D(pressureSampler.value, backUv).x;
+      const pF = texture3D(pressureSampler.value, frontUv).x;
+      const div = texture3D(divergenceSampler.value, uv).x;
 
       const cellSize = this.volumeSizeUniform.div(vec3(resX, resY, resZ));
       const cellSizeAvg = cellSize.x.add(cellSize.y).add(cellSize.z).div(float(3.0));
@@ -2367,12 +2375,12 @@ export class BioluminescenceScene {
       const backUv = clamp(uv.sub(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
       const frontUv = clamp(uv.add(vec3(float(0.0), float(0.0), invRes.z)), halfTexel, maxUv);
 
-      const pL = pressureSampler.sample(leftUv).x;
-      const pR = pressureSampler.sample(rightUv).x;
-      const pD = pressureSampler.sample(downUv).x;
-      const pU = pressureSampler.sample(upUv).x;
-      const pB = pressureSampler.sample(backUv).x;
-      const pF = pressureSampler.sample(frontUv).x;
+      const pL = texture3D(pressureSampler.value, leftUv).x;
+      const pR = texture3D(pressureSampler.value, rightUv).x;
+      const pD = texture3D(pressureSampler.value, downUv).x;
+      const pU = texture3D(pressureSampler.value, upUv).x;
+      const pB = texture3D(pressureSampler.value, backUv).x;
+      const pF = texture3D(pressureSampler.value, frontUv).x;
 
       const spacing = vec3(
         resX.div(this.volumeSizeUniform.x),
@@ -2386,7 +2394,7 @@ export class BioluminescenceScene {
         pF.sub(pB).mul(spacing.z)
       ).mul(float(0.5));
 
-      const velocity = velocitySampler.sample(uv).xyz.sub(gradient);
+      const velocity = texture3D(velocitySampler.value, uv).xyz.sub(gradient);
 
       const coord = uvec3(x.toUint(), y.toUint(), z.toUint());
       textureStore(targetTexture, coord, vec4(velocity, one)).toWriteOnly();

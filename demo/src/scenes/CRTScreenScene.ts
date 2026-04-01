@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, PostProcessing, StorageTexture } from 'three/webgpu';
-import { storage, uniform, instanceIndex, Fn, Loop, If, Break, float, vec3, vec4, vec2, uint, floor, clamp, color, positionLocal, positionWorld, normalWorld, cameraPosition, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, normalize, abs, add, sub, mul, div, instancedArray, sin, cos, fract, dot, hash, dFdx, dFdy, attribute, cross, textureStore, ivec2, log } from 'three/tsl';
+import { storage, uniform, instanceIndex, Fn, Loop, If, Break, float, vec3, vec4, vec2, uint, floor, clamp, color, positionLocal, positionWorld, normalWorld, cameraPosition, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, normalize, abs, add, sub, mul, div, instancedArray, sin, cos, fract, dot, hash, dFdx, dFdy, attribute, cross, textureStore, ivec2, log, modInt } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -167,6 +167,20 @@ export interface CRTScreenSceneParameters {
     powerOffDuration?: number;
     powerOffEndDuration?: number;
     powerFlash?: number;
+
+    // H-sync jitter
+    hsyncJitter?: number;     // max horizontal displacement in subpixel columns (0 = off)
+    hsyncSpeed?: number;      // noise time multiplier (higher = faster jitter)
+
+    // Chromatic aberration
+    chromaAmount?: number;    // max channel separation in subpixel columns (0 = off)
+
+    // Horizontal roll
+    rollSpeed?: number;       // rows per second (0 = off, negative = downward)
+
+    // Burn-in
+    burnInStrength?: number;  // how visible the ghost image is (0–1)
+    burnInRate?: number;      // how fast the burn-in accumulates (0–1 per second)
 }
 
 export class CRTScreenScene {
@@ -283,6 +297,13 @@ export class CRTScreenScene {
     private beamSpreadUniform: any = null;
     private vignetteStrengthUniform: any = null;
     private phaseShearAmountUniform: any = null;
+
+    // Physical distortion effects
+    private hsyncJitterUniform: any = null;
+    private hsyncSpeedUniform: any = null;
+    private chromaAmountUniform: any = null;
+    private rollSpeedUniform: any = null;
+    private burnInStrengthUniform: any = null;
     
     // Beam scan uniforms
     private scanFramerateUniform: any = null;
@@ -296,6 +317,8 @@ export class CRTScreenScene {
     private shaderComputeNode: any = null; // Compute shader for per-pixel shader content
     private targetColorArray: Float32Array | null = null; // CPU-side target buffer (only updated when needed)
     private targetColorsNeedUpdate = false;
+    private burnInBuffer: Float32Array | null = null;      // CPU-side burn-in accumulation (pixels × 3)
+    private burnInTexture: THREE.DataTexture | null = null; // GPU texture for burn-in
 
     // External content source (images/video)
     private contentCanvas: HTMLCanvasElement | null = null;
@@ -624,6 +647,23 @@ export class CRTScreenScene {
             this.targetColorsNeedUpdate = false;
         }
 
+        // Burn-in accumulation
+        const burnInRate = this.parameters.burnInRate ?? 0.0;
+        if (burnInRate > 0 && this.burnInBuffer && this.burnInTexture && this.currentColors) {
+            const colorsArray = this.currentColors.array as Float32Array;
+            const decay = Math.pow(0.9, clampedDelta * 60);
+            const accumulate = burnInRate * clampedDelta;
+            const totalPix = this.logicalWidth * this.logicalHeight;
+            for (let i = 0; i < totalPix; i++) {
+                // currentColors stores R,G,B per pixel (3 floats); burnInBuffer is RGBA (4 floats)
+                this.burnInBuffer[i * 4 + 0] = this.burnInBuffer[i * 4 + 0] * decay + colorsArray[i * 3 + 0] * accumulate;
+                this.burnInBuffer[i * 4 + 1] = this.burnInBuffer[i * 4 + 1] * decay + colorsArray[i * 3 + 1] * accumulate;
+                this.burnInBuffer[i * 4 + 2] = this.burnInBuffer[i * 4 + 2] * decay + colorsArray[i * 3 + 2] * accumulate;
+                this.burnInBuffer[i * 4 + 3] = 1.0;
+            }
+            this.burnInTexture.needsUpdate = true;
+        }
+
         if (isShaderMode) {
             if (this.shaderComputeNode && this.renderer) {
                 this.renderer.computeAsync(this.shaderComputeNode);
@@ -730,6 +770,11 @@ export class CRTScreenScene {
         }
         this.contentTexture = null;
         this.contentTextureNode = null;
+        if (this.burnInTexture) {
+            this.burnInTexture.dispose();
+        }
+        this.burnInTexture = null;
+        this.burnInBuffer = null;
         this.contentSource = null;
         this.contentDirty = false;
         this.contentIsVideo = false;
@@ -874,7 +919,7 @@ export class CRTScreenScene {
 
             const computeFn = Fn(({ storageTexture }: { storageTexture: any }) => {
                 const idx = instanceIndex;
-                const cellX = idx.mod(uint(gridX));
+                const cellX = idx.modInt(uint(gridX));
                 const cellY = idx.div(uint(gridX));
                 const cellXf = cellX.toFloat();
                 const cellYf = cellY.toFloat();
@@ -1191,6 +1236,23 @@ export class CRTScreenScene {
         }
         if (this.phaseShearAmountUniform && params.phaseShearAmount !== undefined) {
             this.phaseShearAmountUniform.value = params.phaseShearAmount;
+        }
+
+        // Physical distortion effects
+        if (this.hsyncJitterUniform && params.hsyncJitter !== undefined) {
+            this.hsyncJitterUniform.value = params.hsyncJitter;
+        }
+        if (this.hsyncSpeedUniform && params.hsyncSpeed !== undefined) {
+            this.hsyncSpeedUniform.value = params.hsyncSpeed;
+        }
+        if (this.chromaAmountUniform && params.chromaAmount !== undefined) {
+            this.chromaAmountUniform.value = params.chromaAmount;
+        }
+        if (this.rollSpeedUniform && params.rollSpeed !== undefined) {
+            this.rollSpeedUniform.value = params.rollSpeed;
+        }
+        if (this.burnInStrengthUniform && params.burnInStrength !== undefined) {
+            this.burnInStrengthUniform.value = params.burnInStrength;
         }
         
         // CRT uniforms
@@ -2995,7 +3057,7 @@ export class CRTScreenScene {
         const baseWithLabels = Fn(() => {
             let base = baseColorNode;
             if (labelTextureNode) {
-                const labelSample = labelTextureNode.sample(uv());
+                const labelSample = texture(this.keyboardLabelTexture, uv());
                 const normalZ = max(attribute('normal', 'vec3').z, float(0.0));
                 const labelMask = smoothstep(float(0.4), float(0.8), normalZ);
                 const alpha = labelSample.a.mul(labelMask).mul(this.keyboardLabelOpacityUniform);
@@ -3048,9 +3110,9 @@ export class CRTScreenScene {
                     const radius2 = screenRadius.mul(screenRadius).add(float(1.0));
                     const falloff = float(1.0).div(float(1.0).add(dist2.div(radius2)));
                     const sampleColor = screenLightTextureNode
-                        ? screenLightTextureNode.sample(vec2(u, v)).rgb
+                        ? texture(screenLightTextureNode.value, vec2(u, v)).rgb
                         : (fallbackTextureNode
-                            ? fallbackTextureNode.sample(vec2(u, v)).rgb
+                            ? texture(fallbackTextureNode.value, vec2(u, v)).rgb
                             : vec3(1.0, 1.0, 1.0));
                     const sat = clamp(lightSaturationNode, 0.0, 1.0);
                     const luma = dot(sampleColor, vec3(0.2126, 0.7152, 0.0722));
@@ -3310,7 +3372,7 @@ export class CRTScreenScene {
             const idx = instanceIndex;
             const screenWidthF = float(screenWidth);
             const screenHeightF = float(screenHeight);
-            const pixelX = idx.mod(uint(screenWidth));
+            const pixelX = idx.modInt(uint(screenWidth));
             const pixelY = idx.div(uint(screenWidth));
             const shaderUV = vec2(
                 pixelX.toFloat().add(float(0.5)).div(screenWidthF),
@@ -3379,11 +3441,11 @@ export class CRTScreenScene {
             // Layout: row 0 all columns, then row 1 all columns, etc.
             const totalColumns = uint(screenWidth * 3);  // Total subpixel columns
             const rowIdx = idx.div(totalColumns);        // Which row (0 to screenHeight-1)
-            const columnIdx = idx.mod(totalColumns);     // Which column (0 to screenWidth*3-1)
+            const columnIdx = idx.modInt(totalColumns);     // Which column (0 to screenWidth*3-1)
             const pixelX = columnIdx.div(uint(3));       // Which logical pixel horizontally
             const pixelY = rowIdx;                       // Which logical pixel vertically
-            const subpixelIdx = columnIdx.mod(uint(3));  // 0=R, 1=G, 2=B
-            
+            const subpixelIdx = columnIdx.modInt(uint(3));  // 0=R, 1=G, 2=B
+
             // Normalized pixel position for power collapse ([-1, 1])
             const screenWidthF = float(screenWidth);
             const screenHeightF = float(screenHeight);
@@ -3474,7 +3536,7 @@ export class CRTScreenScene {
                 pixelX.toFloat().add(float(0.5)).div(screenWidthF),
                 float(1.0).sub(pixelY.toFloat().add(float(0.5)).div(screenHeightF))
             );
-            const contentSample = this.contentTextureNode.sample(contentUV);
+            const contentSample = texture(this.contentTexture, contentUV);
 
             const overlayMask = clamp(contentSample.r, 0.0, 1.0)
                 .mul(this.shaderEnabledUniform)
@@ -3676,6 +3738,24 @@ export class CRTScreenScene {
         this.beamSpreadUniform = uniform(this.parameters.beamSpread ?? 1.3, 'float');
         this.vignetteStrengthUniform = uniform(this.parameters.vignetteStrength ?? 0.1, 'float');
         this.phaseShearAmountUniform = uniform(this.parameters.phaseShearAmount ?? 0.0, 'float');
+
+        // Physical distortion effects
+        this.hsyncJitterUniform = uniform(this.parameters.hsyncJitter ?? 0.0, 'float');
+        this.hsyncSpeedUniform  = uniform(this.parameters.hsyncSpeed  ?? 6.0, 'float');
+        this.chromaAmountUniform = uniform(this.parameters.chromaAmount ?? 0.0, 'float');
+        this.rollSpeedUniform   = uniform(this.parameters.rollSpeed   ?? 0.0, 'float');
+        this.burnInStrengthUniform = uniform(this.parameters.burnInStrength ?? 0.0, 'float');
+
+        // Burn-in CPU buffer + DataTexture (RGBA float, 4 components per pixel)
+        this.burnInBuffer = new Float32Array(screenWidth * screenHeight * 4);
+        if (this.burnInTexture) this.burnInTexture.dispose();
+        this.burnInTexture = new THREE.DataTexture(
+            this.burnInBuffer, screenWidth, screenHeight,
+            THREE.RGBAFormat, THREE.FloatType
+        );
+        this.burnInTexture.minFilter = THREE.LinearFilter;
+        this.burnInTexture.magFilter = THREE.LinearFilter;
+        this.burnInTexture.needsUpdate = true;
         
         mat.colorNode = vec4(0, 0, 0, 1);
 
@@ -3766,38 +3846,62 @@ export class CRTScreenScene {
             const inBoundsProjection = projInsideX.mul(projInsideY);
 
             const uvSample = vec2(uvProjection.x, float(1.0).sub(uvProjection.y));
-            const pixelCoord = uvSample.mul(vec2(float(screenWidth), screenHeightF));
-            const clampedCoordX = clamp(pixelCoord.x, float(0.0), float(screenWidth - 1));
-            const clampedCoordY = clamp(pixelCoord.y, float(0.0), screenHeightF.sub(float(1.0)));
-            const pixelX0f = floor(clampedCoordX);
-            const pixelY0f = floor(clampedCoordY);
-            const pixelX1f = min(pixelX0f.add(float(1.0)), float(screenWidth - 1));
-            const pixelY1f = min(pixelY0f.add(float(1.0)), screenHeightF.sub(float(1.0)));
-            const fracX = clampedCoordX.sub(pixelX0f);
-            const fracY = clampedCoordY.sub(pixelY0f);
-            const pixelX0 = pixelX0f.toUint();
-            const pixelY0 = pixelY0f.toUint();
-            const pixelX1 = pixelX1f.toUint();
-            const pixelY1 = pixelY1f.toUint();
-            const idx00 = pixelY0.mul(totalColumnsU).add(pixelX0.mul(uint(3)));
-            const idx10 = pixelY0.mul(totalColumnsU).add(pixelX1.mul(uint(3)));
-            const idx01 = pixelY1.mul(totalColumnsU).add(pixelX0.mul(uint(3)));
-            const idx11 = pixelY1.mul(totalColumnsU).add(pixelX1.mul(uint(3)));
-            const redIntensity = mix(
-                mix(this.currentColors.element(idx00).r, this.currentColors.element(idx10).r, fracX),
-                mix(this.currentColors.element(idx01).r, this.currentColors.element(idx11).r, fracX),
-                fracY
-            );
-            const greenIntensity = mix(
-                mix(this.currentColors.element(idx00.add(uint(1))).r, this.currentColors.element(idx10.add(uint(1))).r, fracX),
-                mix(this.currentColors.element(idx01.add(uint(1))).r, this.currentColors.element(idx11.add(uint(1))).r, fracX),
-                fracY
-            );
-            const blueIntensity = mix(
-                mix(this.currentColors.element(idx00.add(uint(2))).r, this.currentColors.element(idx10.add(uint(2))).r, fracX),
-                mix(this.currentColors.element(idx01.add(uint(2))).r, this.currentColors.element(idx11.add(uint(2))).r, fracX),
-                fracY
-            );
+
+            // B3: Horizontal roll — shift uvSample.y by time * rollSpeed / screenHeight
+            const rollOffset = fract(this.timeUniform.mul(this.rollSpeedUniform).div(screenHeightF));
+            const uvRolled = vec2(uvSample.x, fract(uvSample.y.add(rollOffset)));
+
+            // B1: H-sync jitter — per-row horizontal displacement
+            const rowIndex = floor(uvRolled.y.mul(screenHeightF));
+            const jitterHash = hash(vec2(rowIndex, floor(this.timeUniform.mul(this.hsyncSpeedUniform))));
+            const jitterOffset = jitterHash.sub(0.5).mul(2.0).mul(this.hsyncJitterUniform).div(totalColumnsF);
+            const uvJittered = vec2(uvRolled.x.add(jitterOffset), uvRolled.y);
+
+            // B2: Chromatic aberration — sample R, G, B at laterally offset UVs
+            const chromaScale = this.chromaAmountUniform.div(totalColumnsF);
+            const uvR = vec2(uvJittered.x.sub(chromaScale), uvJittered.y);
+            const uvG = uvJittered;
+            const uvB = vec2(uvJittered.x.add(chromaScale), uvJittered.y);
+
+            // Helper: sample color buffer at given uv, returns vec3(r, g, b) intensities
+            const sampleColors = Fn(([sUv]: any[]) => {
+                const pc = sUv.mul(vec2(float(screenWidth), screenHeightF));
+                const cx = clamp(pc.x, float(0.0), float(screenWidth - 1));
+                const cy = clamp(pc.y, float(0.0), screenHeightF.sub(float(1.0)));
+                const x0 = floor(cx);
+                const y0 = floor(cy);
+                const x1 = min(x0.add(float(1.0)), float(screenWidth - 1));
+                const y1 = min(y0.add(float(1.0)), screenHeightF.sub(float(1.0)));
+                const fx = cx.sub(x0);
+                const fy = cy.sub(y0);
+                const i00 = y0.toUint().mul(totalColumnsU).add(x0.toUint().mul(uint(3)));
+                const i10 = y0.toUint().mul(totalColumnsU).add(x1.toUint().mul(uint(3)));
+                const i01 = y1.toUint().mul(totalColumnsU).add(x0.toUint().mul(uint(3)));
+                const i11 = y1.toUint().mul(totalColumnsU).add(x1.toUint().mul(uint(3)));
+                const r = mix(
+                    mix(this.currentColors.element(i00).r, this.currentColors.element(i10).r, fx),
+                    mix(this.currentColors.element(i01).r, this.currentColors.element(i11).r, fx),
+                    fy
+                );
+                const g = mix(
+                    mix(this.currentColors.element(i00.add(uint(1))).r, this.currentColors.element(i10.add(uint(1))).r, fx),
+                    mix(this.currentColors.element(i01.add(uint(1))).r, this.currentColors.element(i11.add(uint(1))).r, fx),
+                    fy
+                );
+                const b = mix(
+                    mix(this.currentColors.element(i00.add(uint(2))).r, this.currentColors.element(i10.add(uint(2))).r, fx),
+                    mix(this.currentColors.element(i01.add(uint(2))).r, this.currentColors.element(i11.add(uint(2))).r, fx),
+                    fy
+                );
+                return vec3(r, g, b);
+            });
+
+            const rgbR = sampleColors(uvR);
+            const rgbG = sampleColors(uvG);
+            const rgbB = sampleColors(uvB);
+            const redIntensity = rgbR.x;
+            const greenIntensity = rgbG.y;
+            const blueIntensity = rgbB.z;
 
             const subpixelCoord = uvScreen.mul(vec2(totalColumnsF, screenHeightF));
             const safeR2 = max(r2Screen, float(0.000001));
@@ -3811,7 +3915,7 @@ export class CRTScreenScene {
             const clampedX = clamp(subpixelIndexX, float(0.0), totalColumnsF.sub(float(1.0)));
             const clampedY = clamp(subpixelIndexY, float(0.0), screenHeightF.sub(float(1.0)));
             const columnIdx = clampedX.toUint();
-            const subpixelIdx = columnIdx.mod(uint(3));
+            const subpixelIdx = columnIdx.modInt(uint(3));
             const isRed = subpixelIdx.equal(uint(0));
             const isGreen = subpixelIdx.equal(uint(1));
             const isBlue = subpixelIdx.equal(uint(2));
@@ -3880,7 +3984,11 @@ export class CRTScreenScene {
             const lightPass = this.screenLightModeUniform;
             const baseColor = tintedColor.mul(cover);
             const finalColor = mix(baseColor, triadColor, lightPass);
-            return finalColor.mul(gain).mul(vignette).mul(this.brightnessUniform).mul(inBounds);
+
+            // B4: Burn-in — blend in ghost image from DataTexture
+            const burnInColor = texture(this.burnInTexture!, uvJittered).rgb;
+            const withBurnIn = mix(finalColor, burnInColor, this.burnInStrengthUniform);
+            return withBurnIn.mul(gain).mul(vignette).mul(this.brightnessUniform).mul(inBounds);
         })();
 
         mat.opacityNode = float(1.0);

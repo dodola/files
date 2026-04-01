@@ -20,6 +20,7 @@ import {
   pass,
   pow,
   screenCoordinate,
+  texture,
   uv,
   select,
   sqrt,
@@ -58,6 +59,7 @@ export class PlanetScene {
   private readonly planetRadiusValue = 1.0;
   private canvas: HTMLCanvasElement | null = null;
   private renderer: THREE.WebGPURenderer | null = null;
+  private ownsRenderer = false;
   private postProcessing: THREE.PostProcessing | null = null;
   private scene: THREE.Scene | null = null;
   private camera: THREE.PerspectiveCamera | null = null;
@@ -105,7 +107,7 @@ export class PlanetScene {
   private ready = false;
   private pendingResize: { width: number; height: number } | null = null;
 
-  async init(canvas: HTMLCanvasElement): Promise<void> {
+  async init(canvas: HTMLCanvasElement, externalRenderer?: any): Promise<void> {
     this.canvas = canvas;
     this.width = canvas.clientWidth || canvas.width || window.innerWidth || 1;
     this.height = canvas.clientHeight || canvas.height || window.innerHeight || 1;
@@ -116,13 +118,20 @@ export class PlanetScene {
     this.camera = new THREE.PerspectiveCamera(50, this.width / this.height, 0.1, 100);
     this.camera.position.set(0, 0.6, 3);
 
-    this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(this.width, this.height, false);
+    if (externalRenderer) {
+      this.renderer = externalRenderer;
+      this.ownsRenderer = false;
+      this.renderer.setSize(this.width, this.height, false);
+    } else {
+      this.renderer = new THREE.WebGPURenderer({ canvas, antialias: true });
+      this.ownsRenderer = true;
+      this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      this.renderer.setSize(this.width, this.height, false);
+      await this.renderer.init();
+    }
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.shadowMap.autoUpdate = true;
-    await this.renderer.init();
     this.ready = true;
 
     const ambient = new THREE.AmbientLight(0xffffff, 0.35);
@@ -388,7 +397,7 @@ export class PlanetScene {
       }
 
       const rayStop = min(sceneStop, closestInnerT);
-      const sceneSample = sceneColor.sample(uvNode);
+      const sceneSample = texture(sceneColor.value, uvNode);
       const baseColor = select(closestInnerT.lessThan(sceneStop), vec3(0.0), sceneSample.rgb);
 
       const entries = atmosphereResults.map((atmosphere) => atmosphere.tEntry);
@@ -527,7 +536,7 @@ export class PlanetScene {
     this.controls?.dispose();
 
     this.postProcessing?.dispose();
-    this.renderer?.dispose();
+    if (this.ownsRenderer) this.renderer?.dispose();
     this.shadowCasterGeometry?.dispose();
     this.shadowCasterMaterial?.dispose();
 

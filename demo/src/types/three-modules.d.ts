@@ -396,6 +396,7 @@ declare module 'three/tsl' {
   export const log2: any;
   export const sqrt: any;
   export const inversesqrt: any;
+  export const inverseSqrt: any;
   export const pow: any;
   export const min: any;
   export const max: any;
@@ -417,6 +418,7 @@ declare module 'three/tsl' {
   export const mul: any;
   export const div: any;
   export const mod: any;
+  export const modInt: any;
   export const remainder: any;
   export const bitAnd: any;
   export const bitOr: any;
