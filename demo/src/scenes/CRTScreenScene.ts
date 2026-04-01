@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, PostProcessing, StorageTexture } from 'three/webgpu';
-import { storage, uniform, instanceIndex, Fn, Loop, If, Break, float, vec3, vec4, vec2, uint, floor, clamp, color, positionLocal, positionWorld, normalWorld, cameraPosition, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inversesqrt, mix, normalize, abs, add, sub, mul, div, instancedArray, sin, cos, fract, dot, hash, dFdx, dFdy, attribute, cross, textureStore, ivec2, log } from 'three/tsl';
+import { storage, uniform, instanceIndex, Fn, Loop, If, Break, float, vec3, vec4, vec2, uint, floor, clamp, color, positionLocal, positionWorld, normalWorld, cameraPosition, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, normalize, abs, add, sub, mul, div, instancedArray, sin, cos, fract, dot, hash, dFdx, dFdy, attribute, cross, textureStore, ivec2, log } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
@@ -3801,7 +3801,7 @@ export class CRTScreenScene {
 
             const subpixelCoord = uvScreen.mul(vec2(totalColumnsF, screenHeightF));
             const safeR2 = max(r2Screen, float(0.000001));
-            const invLen = inversesqrt(safeR2);
+            const invLen = inverseSqrt(safeR2);
             const dirPre = vec2(nxScreen, nyScreen).mul(invLen);
             const phaseShear = this.phaseShearAmountUniform.mul(sqrt(r2Screen)).mul(dirPre.x);
             const subpixelCoordSheared = vec2(subpixelCoord.x.add(phaseShear), subpixelCoord.y);
@@ -3871,7 +3871,7 @@ export class CRTScreenScene {
 
             const p = vec2(nxFinal, nyFinal);
             const rho2 = p.x.mul(p.x).add(p.y.mul(p.y));
-            const cosTheta = inversesqrt(float(1.0).add(this.beamSpreadUniform.mul(rho2)));
+            const cosTheta = inverseSqrt(float(1.0).add(this.beamSpreadUniform.mul(rho2)));
             const gain = pow(cosTheta, this.beamGammaUniform);
 
             const vignetteAmount = float(1.0).sub(this.vignetteStrengthUniform);

@@ -2,10 +2,10 @@ import * as THREE from 'three';
 import {
   MeshBasicNodeMaterial,
   PostProcessing,
-  Storage3DTexture,
   StorageBufferAttribute,
   WebGPURenderer
 } from 'three/webgpu';
+import { Storage3DTexture } from './Storage3DTexture';
 import {
   Fn,
   uniform,

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { Storage3DTexture, WebGPURenderer } from 'three/webgpu';
+import { WebGPURenderer } from 'three/webgpu';
+import { Storage3DTexture } from './Storage3DTexture';
 import {
   Break,
   Fn,

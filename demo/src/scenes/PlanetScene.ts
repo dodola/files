@@ -8,9 +8,9 @@ import {
   dot,
   exp,
   float,
+  fract,
   int,
   getViewPosition,
-  interleavedGradientNoise,
   length,
   max,
   min,
@@ -24,9 +24,17 @@ import {
   select,
   sqrt,
   uniform,
+  vec2,
   vec3,
   vec4
 } from 'three/tsl';
+
+// interleavedGradientNoise was removed from three/tsl in 0.171.x.
+// Re-implement using the standard GDC 2014 formula (Morgan McGuire):
+//   IGN(p) = fract(52.9829189 * fract(dot(p, vec2(0.06711056, 0.00583715))))
+const interleavedGradientNoise = Fn(([p]: [any]) => {
+  return fract(float(52.9829189).mul(fract(dot(p, vec2(0.06711056, 0.00583715)))));
+});
 import { PLANET_SCENE_DEFAULTS, type PlanetSceneParameters } from './PlanetSceneParameters';
 
 const MAX_ATMOSPHERES = 10;
