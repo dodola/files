@@ -35,6 +35,7 @@ export type BioluminescenceSceneParameters = {
   bubbleWakeStrength: number;
   bubbleWakeLength: number;
   bubbleWakeAngle: number;
+  activationVelocityScale: number;
   energyAccumulationRate: number;
   energyDecayRate: number;
   activationEnergyThreshold: number;
@@ -94,6 +95,7 @@ export const BIOLUMINESCENCE_SCENE_DEFAULTS: BioluminescenceSceneParameters = {
   bubbleWakeStrength: 0.5,
   bubbleWakeLength: 1.0,
   bubbleWakeAngle: 0.5,
+  activationVelocityScale: 1.0,
   energyAccumulationRate: 0.1,
   energyDecayRate: 0.02,
   activationEnergyThreshold: 1.0,

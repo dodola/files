@@ -8,7 +8,13 @@
     "noUnusedParameters": false,
     "skipLibCheck": true,
     "outDir": "dist",
-    "rootDir": "src"
+    "rootDir": "src",
+    "lib": ["ES2022", "DOM", "WebWorker"],
+    "paths": {
+      "./BioluminescenceSceneParameters": ["./src/stubs/BioluminescenceSceneParameters"],
+      "./PlanetSceneParameters": ["./src/stubs/PlanetSceneParameters"],
+      "../oneill-cylinder/constants": ["./src/stubs/oneill-cylinder/constants"]
+    }
   },
   "include": ["src"]
 }

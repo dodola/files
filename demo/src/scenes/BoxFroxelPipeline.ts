@@ -211,7 +211,7 @@ export class BoxFroxelPipeline {
       const transmittance = float(1.0).toVar();
       const accumulated = vec3(float(0.0)).toVar();
 
-      Loop({ start: 0, end: MAX_FROXEL_SLICES, type: 'int', condition: '<' }, ({ i }) => {
+      Loop({ start: 0, end: MAX_FROXEL_SLICES, type: 'int', condition: '<' }, ({ i }: { i: any }) => {
         const sliceCount = resZ.toInt();
         If(i.greaterThanEqual(sliceCount), () => {
           Break();

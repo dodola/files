@@ -329,7 +329,7 @@ export class PlanetScene {
         const densitySum = float(0.0).toVar();
         const litDensitySum = float(0.0).toVar();
 
-        Loop(marchSteps, ({ i }) => {
+        Loop(marchSteps, ({ i }: { i: any }) => {
           const t0 = stepSize.mul(float(i));
           const t1 = min(t0.add(stepSize), thickness);
           const segmentLength = max(t1.sub(t0), float(0.0));
@@ -449,14 +449,14 @@ export class PlanetScene {
     const setNumber = (key: keyof PlanetSceneParameters, uniform: { value: number }) => {
       const value = params[key];
       if (typeof value !== 'number') return;
-      (this.parameters as Record<string, number>)[key] = value;
+      (this.parameters as unknown as Record<string, number>)[key as string] = value;
       uniform.value = value;
       needsRender = true;
     };
     const setColor = (key: keyof PlanetSceneParameters, uniform: { value: THREE.Color }) => {
       const value = params[key];
       if (typeof value !== 'string') return;
-      (this.parameters as Record<string, string>)[key] = value;
+      (this.parameters as unknown as Record<string, string>)[key as string] = value;
       try {
         uniform.value.set(value);
       } catch (error) {
