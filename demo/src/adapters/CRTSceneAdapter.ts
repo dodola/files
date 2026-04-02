@@ -18,8 +18,9 @@ export class CRTSceneAdapter implements IScene {
     this.renderer.setSize(width, height);
     await this.renderer.init();
 
-    this.scene = new CRTScreenScene({ shaderType: 'mandelbrot', displayMode: 'shader' });
+    this.scene = new CRTScreenScene();
     await this.scene.init(canvas, this.renderer);
+    this.scene.updateParameters({ shaderType: 'mandelbrot', displayMode: 'shader' });
 
     this.startLoop();
   }
