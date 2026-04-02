@@ -4,16 +4,11 @@ import type { IScene } from '../IScene';
 import { CRTScreenScene, type CRTScreenSceneParameters } from '../scenes/CRTScreenScene';
 
 const INITIAL_PARAMS: CRTScreenSceneParameters = {
-  displayMode: 'shader',
-  shaderType: 'mandelbrot',
-  brightness: 1.0,
+  brightness: 1.8,
   bloomStrength: 0.8,
   bloomRadius: 0.5,
   bloomThreshold: 0.1,
-  crtAmount: 0.5,
   crtBarrel: 0.2,
-  moireStrength: 0.3,
-  screenCurvature: 0.1,
 };
 
 export class CRTSceneAdapter implements IScene {
@@ -72,26 +67,12 @@ export class CRTSceneAdapter implements IScene {
     const params: CRTScreenSceneParameters = { ...INITIAL_PARAMS };
 
     const displayFolder = pane.addFolder({ title: 'Display' });
-    displayFolder.addBinding(params, 'displayMode', {
-      options: { shader: 'shader', static: 'static', terminal: 'terminal' },
-    }).on('change', ({ value }) => this.scene?.updateParameters({ displayMode: value as CRTScreenSceneParameters['displayMode'] }));
-
-    displayFolder.addBinding(params, 'shaderType', {
-      options: { mandelbrot: 'mandelbrot', julia: 'julia' },
-    }).on('change', ({ value }) => this.scene?.updateParameters({ shaderType: value as 'mandelbrot' | 'julia' }));
-
     displayFolder.addBinding(params, 'brightness', { min: 0, max: 2, step: 0.01 })
       .on('change', ({ value }) => this.scene?.updateParameters({ brightness: value }));
 
     const crtFolder = pane.addFolder({ title: 'CRT' });
-    crtFolder.addBinding(params, 'crtAmount', { min: 0, max: 1, step: 0.01 })
-      .on('change', ({ value }) => this.scene?.updateParameters({ crtAmount: value }));
     crtFolder.addBinding(params, 'crtBarrel', { min: 0, max: 1, step: 0.01 })
       .on('change', ({ value }) => this.scene?.updateParameters({ crtBarrel: value }));
-    crtFolder.addBinding(params, 'screenCurvature', { min: 0, max: 1, step: 0.01 })
-      .on('change', ({ value }) => this.scene?.updateParameters({ screenCurvature: value }));
-    crtFolder.addBinding(params, 'moireStrength', { min: 0, max: 1, step: 0.01 })
-      .on('change', ({ value }) => this.scene?.updateParameters({ moireStrength: value }));
 
     const bloomFolder = pane.addFolder({ title: 'Bloom' });
     bloomFolder.addBinding(params, 'bloomStrength', { min: 0, max: 3, step: 0.01 })

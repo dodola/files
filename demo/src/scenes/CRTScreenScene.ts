@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, PostProcessing } from 'three/webgpu';
-import { storage, uniform, instanceIndex, Fn, Loop, If, Break, float, vec3, vec4, vec2, uint, floor, clamp, color, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, normalize, abs, add, sub, mul, div, instancedArray, sin, cos, fract, dot, hash, dFdx, dFdy, log, modInt } from 'three/tsl';
+import { uniform, instanceIndex, Fn, float, vec3, vec4, vec2, uint, floor, clamp, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, abs, instancedArray, fract, dot, hash, modInt } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -58,40 +58,14 @@ const UNICODE_TO_CP437: Map<number, number> = (() => {
 })();
 
 export interface CRTScreenSceneParameters {
-    displayMode?: 'video' | 'emulator' | 'static' | 'terminal' | 'xterm' | 'shader';
-    emulatorSource?: 'snes' | 'dos';
-    emulatorRom?: string;
-    emulatorLoadRom?: boolean;
-    dosBundle?: string;
-    dosLoadBundle?: boolean;
     screenResolution?: string;
-    shaderType?: 'mandelbrot' | 'julia';
-    shaderPanX?: number;
-    shaderPanY?: number;
-    shaderZoom?: number;
-    mandelbrotPanX?: number;
-    mandelbrotPanY?: number;
-    mandelbrotZoom?: number;
-    juliaPanX?: number;
-    juliaPanY?: number;
-    juliaZoom?: number;
-    juliaCReal?: number;
-    juliaCImag?: number;
     terminalFontScale?: number;
     terminalFontColor?: string;
-    moireStrength?: number;
-    moireChroma?: number;
-    moireFeather?: number;
-    moireThreshold?: number;
     // Screen physical layout
     screenWidth?: number;        // physical width in world units
     screenHeight?: number;       // physical height in world units
     minBrightness?: number;      // minimum brightness for pixels
     brightness?: number;         // Overall brightness multiplier (0-2)
-    
-    // Static pattern
-    staticSpeed?: number;        // How fast the static updates (multiplier for time)
-    staticContrast?: number;     // Amount of gray vs pure black/white (0-1)
     
     // Phosphor appearance
     slotDutyX?: number;          // horizontal subpixel fill (0.1-1.0)
@@ -112,12 +86,10 @@ export interface CRTScreenSceneParameters {
     colorDecay?: number;         // Decay rate for color changes (higher = faster)
     
     // CRT distortion
-    crtAmount?: number;
     crtBarrel?: number;
     crtKeystoneX?: number;
     crtKeystoneY?: number;
     crtZoom?: number;
-    screenCurvature?: number;
     
     // Bloom
     bloomStrength?: number;
@@ -165,12 +137,10 @@ export class CRTScreenScene {
     
     // Pixel screen uniforms
     // CRT distortion uniforms
-    private crtAmountUniform: any = null;
     private crtBarrelUniform: any = null;
     private crtKeystoneXUniform: any = null;
     private crtKeystoneYUniform: any = null;
     private crtZoomUniform: any = null;
-    private screenCurvatureUniform: any = null;
     
     // Brightness and color interpolation uniforms
     private minBrightnessUniform: any = null;
@@ -188,7 +158,7 @@ export class CRTScreenScene {
     private useExternalContentUniform: any = null;
     private useExternalTextureUniform: any = null;
     
-    // Static pattern uniforms
+    // Static pattern uniforms (used for non-terminal fallback)
     private staticSpeedUniform: any = null;
     private staticContrastUniform: any = null;
     
@@ -197,10 +167,6 @@ export class CRTScreenScene {
     private slotDutyYUniform: any = null;
     private subpixelFeatherUniform: any = null;
     private phosphorTintUniform: any = null;
-    private moireStrengthUniform: any = null;
-    private moireChromaUniform: any = null;
-    private moireFeatherUniform: any = null;
-    private moireThresholdUniform: any = null;
     private screenLightModeUniform: any = null;
     
     // Beam physics uniforms
@@ -225,7 +191,6 @@ export class CRTScreenScene {
     private currentColors: any = null;  // GPU storage buffer for current colors
     private targetColors: any = null;   // GPU storage buffer for target colors
     private colorComputeNode: any = null; // Compute shader for interpolation
-    private shaderComputeNode: any = null; // Compute shader for per-pixel shader content
     private targetColorArray: Float32Array | null = null; // CPU-side target buffer (only updated when needed)
     private targetColorsNeedUpdate = false;
     private burnInBuffer: Float32Array | null = null;      // CPU-side burn-in accumulation (pixels × 3)
@@ -257,9 +222,6 @@ export class CRTScreenScene {
     private terminalFontLoaded = false;
     private terminalFontLoading = false;
     private readonly terminalFontFamily = 'IBM VGA 8x16';
-    private shaderOverlayFontLoaded = false;
-    private shaderOverlayFontLoading = false;
-    private readonly shaderOverlayFontFamily = 'Compaq Thin 8x16';
     private readonly terminalCharWidth = 8;
     private readonly terminalCharHeight = 16;
     private readonly terminalPaddingChars = 1;
@@ -268,8 +230,18 @@ export class CRTScreenScene {
     private terminalCursorBlinkTime = 0;
     private readonly terminalCursorBlinkInterval = 0.5;
     private terminalCursorVisible = true;
-    
-    // Animation timing
+
+    // Demo animation
+    private demoQueue: Array<{ text: string; color: number; delay: number }> = [];
+    private demoCharTimer = 0;
+    private demoCharIdx = 0;
+    private demoActive = false;
+    private demoLoopTimer = 0;
+    private demoLoopFrame = 0;
+    private readonly DEMO_CHAR_DELAY = 0.022;  // seconds per character (typewriter speed)
+    private readonly DEMO_LOOP_INTERVAL = 0.12; // seconds per spinner frame
+
+
     private lastUpdateTime: number = 0;
     private timeUniform = uniform(0, 'float');
     private deltaTimeUniform = uniform(0, 'float');
@@ -289,69 +261,25 @@ export class CRTScreenScene {
     private static readonly DEFAULT_SCREEN_HEIGHT = 48.0;
     private static readonly DEFAULT_RESOLUTION_PRESET =
         `${CRTScreenScene.DEFAULT_LOGICAL_WIDTH}x${CRTScreenScene.DEFAULT_LOGICAL_HEIGHT}`;
-    private static readonly SHADER_MAX_ITER = 80;
 
     private logicalWidth = CRTScreenScene.DEFAULT_LOGICAL_WIDTH;
     private logicalHeight = CRTScreenScene.DEFAULT_LOGICAL_HEIGHT;
-    private shaderPanXUniform: any = null;
-    private shaderPanYUniform: any = null;
-    private shaderZoomUniform: any = null;
-    private shaderEnabledUniform: any = null;
-    private shaderTypeUniform: any = null;
-    private shaderJuliaCUniform: any = null;
 
-    private getActiveShaderParams(): { panX: number; panY: number; zoom: number } {
-        const isJulia = (this.parameters.shaderType ?? 'mandelbrot') === 'julia';
-        if (isJulia) {
-            return {
-                panX: this.parameters.juliaPanX ?? 0.0,
-                panY: this.parameters.juliaPanY ?? 0.0,
-                zoom: this.parameters.juliaZoom ?? 1.0
-            };
-        }
-        return {
-            panX: this.parameters.mandelbrotPanX ?? this.parameters.shaderPanX ?? -0.75,
-            panY: this.parameters.mandelbrotPanY ?? this.parameters.shaderPanY ?? 0.0,
-            zoom: this.parameters.mandelbrotZoom ?? this.parameters.shaderZoom ?? 1.0
-        };
-    }
-    
     // Scene parameters
     private parameters: CRTScreenSceneParameters = {
-        displayMode: 'shader',
-        emulatorSource: 'snes',
-        emulatorRom: '/roms/jetpilotrising.sfc',
-        emulatorLoadRom: false,
-        dosBundle: '/dos/digger.jsdos',
-        dosLoadBundle: false,
         screenResolution: CRTScreenScene.DEFAULT_RESOLUTION_PRESET,
-        shaderType: 'julia',
-        mandelbrotPanX: -0.75,
-        mandelbrotPanY: 0.0,
-        mandelbrotZoom: 1.0,
-        juliaPanX: 0.0,
-        juliaPanY: 0.0,
-        juliaZoom: 1.0,
-        juliaCReal: -0.8,
-        juliaCImag: 0.156,
         terminalFontScale: 3,
         terminalFontColor: '#33ff66',
-        moireStrength: 2.0,
-        moireChroma: 1.0,
-        moireFeather: 0.0,
-        moireThreshold: 0.5,
         screenWidth: CRTScreenScene.DEFAULT_SCREEN_WIDTH,
         screenHeight: CRTScreenScene.DEFAULT_SCREEN_HEIGHT,
         minBrightness: 0.01,
-        brightness: 1.19,             // Slightly boosted baseline
+        brightness: 1.8,
         powerOn: true,
         powerOnDuration: 0.8,
         powerWarmupDuration: 1.6,
         powerOffDuration: 0.45,
         powerOffEndDuration: 0.0,
         powerFlash: 0.6,
-        staticSpeed: 15.0,           // Fast updates for realistic TV static
-        staticContrast: 0.2,         // 20% gray values, 80% black/white
         slotDutyX: 0.65,             // 65% horizontal fill
         slotDutyY: 0.68,             // 68% vertical fill
         subpixelFeather: 0.08,
@@ -362,12 +290,10 @@ export class CRTScreenScene {
         beamSpread: 1.3,
         vignetteStrength: 0.1,
         phaseShearAmount: 0.0,
-        crtAmount: 0.0,
         crtBarrel: 0.0,
         crtKeystoneX: 0.0,
         crtKeystoneY: 0.0,
         crtZoom: 1.0,
-        screenCurvature: 0.2,
         bloomStrength: 1.88,
         bloomRadius: 0.0,
         bloomThreshold: 0.0,
@@ -437,7 +363,6 @@ export class CRTScreenScene {
         this.currentColors = null;
         this.targetColors = null;
         this.colorComputeNode = null;
-        this.shaderComputeNode = null;
         this.targetColorArray = null;
 
         this.initializeGPUComputeShaders();
@@ -495,10 +420,9 @@ export class CRTScreenScene {
         this.updatePowerTransition(clampedDelta);
         this.updatePowerWarmup(clampedDelta);
 
-        if ((this.parameters.displayMode ?? 'video') === 'terminal') {
-            this.updateTerminalBlink(clampedDelta);
-        }
-        
+        this.updateTerminalBlink(clampedDelta);
+        this.updateDemoAnimation(clampedDelta);
+
         // Update beam scan position
         if (this.scanHeadUniform) {
             const totalSubpixels = this.logicalWidth * this.logicalHeight * 3;
@@ -515,8 +439,7 @@ export class CRTScreenScene {
         
         // Update target colors on GPU if needed (rare)
         this.updateContentFrame();
-        const isShaderMode = (this.parameters.displayMode ?? 'video') === 'shader';
-        if (!isShaderMode && this.targetColorsNeedUpdate) {
+        if (this.targetColorsNeedUpdate) {
             this.updateGPUTargetColors();
             this.targetColorsNeedUpdate = false;
         }
@@ -538,12 +461,6 @@ export class CRTScreenScene {
             this.burnInTexture.needsUpdate = true;
         }
 
-        if (isShaderMode) {
-            if (this.shaderComputeNode && this.renderer) {
-                this.renderer.computeAsync(this.shaderComputeNode);
-            }
-        }
-        
         // Execute GPU compute shader for color interpolation
         if (this.colorComputeNode && this.renderer) {
             this.renderer.computeAsync(this.colorComputeNode);
@@ -601,7 +518,6 @@ export class CRTScreenScene {
         this.targetColors = null;
         this.targetColorArray = null;
         this.colorComputeNode = null;
-        this.shaderComputeNode = null;
         this.powerOnUniform = null;
         this.powerTransitionUniform = null;
         this.powerDirectionUniform = null;
@@ -610,10 +526,6 @@ export class CRTScreenScene {
         this.powerCollapseRatioUniform = null;
         this.useExternalContentUniform = null;
         this.useExternalTextureUniform = null;
-        this.moireStrengthUniform = null;
-        this.moireChromaUniform = null;
-        this.moireFeatherUniform = null;
-        this.moireThresholdUniform = null;
         this.screenLightModeUniform = null;
         this.contentCanvas = null;
         this.contentContext = null;
@@ -662,87 +574,15 @@ export class CRTScreenScene {
 
     updateParameters(params: Partial<CRTScreenSceneParameters>): void {
         const prevPowerOn = this.parameters.powerOn ?? true;
-        const prevDisplayMode = this.parameters.displayMode ?? 'video';
         const prevTerminalScale = this.parameters.terminalFontScale ?? 1;
         const prevResolution = this.parameters.screenResolution ?? CRTScreenScene.DEFAULT_RESOLUTION_PRESET;
-        const prevShaderType = this.parameters.shaderType ?? 'mandelbrot';
         Object.assign(this.parameters, params);
 
-        if (params.displayMode !== undefined && params.displayMode !== prevDisplayMode) {
-            this.applyDisplayMode();
-        }
         if (params.screenResolution !== undefined && params.screenResolution !== prevResolution) {
             this.setLogicalResolution(this.parameters.screenResolution);
         }
         if (params.terminalFontScale !== undefined && params.terminalFontScale !== prevTerminalScale) {
             this.resetTerminalBuffer();
-        }
-        if (params.shaderPanX !== undefined) {
-            this.parameters.mandelbrotPanX = params.shaderPanX;
-        }
-        if (params.shaderPanY !== undefined) {
-            this.parameters.mandelbrotPanY = params.shaderPanY;
-        }
-        if (params.shaderZoom !== undefined) {
-            this.parameters.mandelbrotZoom = params.shaderZoom;
-        }
-        const isJulia = (this.parameters.shaderType ?? 'mandelbrot') === 'julia';
-        if (params.shaderType !== undefined && params.shaderType !== prevShaderType) {
-            if (this.shaderTypeUniform) {
-                this.shaderTypeUniform.value = params.shaderType === 'julia' ? 1.0 : 0.0;
-            }
-        }
-        if (
-            params.shaderType !== undefined ||
-            params.mandelbrotPanX !== undefined ||
-            params.mandelbrotPanY !== undefined ||
-            params.mandelbrotZoom !== undefined ||
-            params.juliaPanX !== undefined ||
-            params.juliaPanY !== undefined ||
-            params.juliaZoom !== undefined ||
-            params.juliaCReal !== undefined ||
-            params.juliaCImag !== undefined ||
-            params.shaderPanX !== undefined ||
-            params.shaderPanY !== undefined ||
-            params.shaderZoom !== undefined
-        ) {
-            const active = this.getActiveShaderParams();
-            if (this.shaderPanXUniform) {
-                this.shaderPanXUniform.value = active.panX;
-            }
-            if (this.shaderPanYUniform) {
-                this.shaderPanYUniform.value = active.panY;
-            }
-            if (this.shaderZoomUniform) {
-                this.shaderZoomUniform.value = Math.max(0.0001, active.zoom);
-            }
-        } else if (isJulia) {
-            if (this.shaderPanXUniform && params.juliaPanX !== undefined) {
-                this.shaderPanXUniform.value = params.juliaPanX;
-            }
-            if (this.shaderPanYUniform && params.juliaPanY !== undefined) {
-                this.shaderPanYUniform.value = params.juliaPanY;
-            }
-            if (this.shaderZoomUniform && params.juliaZoom !== undefined) {
-                this.shaderZoomUniform.value = Math.max(0.0001, params.juliaZoom);
-            }
-        } else {
-            if (this.shaderPanXUniform && params.mandelbrotPanX !== undefined) {
-                this.shaderPanXUniform.value = params.mandelbrotPanX;
-            }
-            if (this.shaderPanYUniform && params.mandelbrotPanY !== undefined) {
-                this.shaderPanYUniform.value = params.mandelbrotPanY;
-            }
-            if (this.shaderZoomUniform && params.mandelbrotZoom !== undefined) {
-                this.shaderZoomUniform.value = Math.max(0.0001, params.mandelbrotZoom);
-            }
-        }
-        if (this.shaderJuliaCUniform) {
-            const cReal = params.juliaCReal ?? this.parameters.juliaCReal;
-            const cImag = params.juliaCImag ?? this.parameters.juliaCImag;
-            if (cReal !== undefined && cImag !== undefined) {
-                this.shaderJuliaCUniform.value.set(cReal, cImag);
-            }
         }
         if (params.powerOn !== undefined) {
             if (params.powerOn !== prevPowerOn) {
@@ -772,12 +612,6 @@ export class CRTScreenScene {
         if (this.brightnessUniform && params.brightness !== undefined) {
             this.brightnessUniform.value = params.brightness;
         }
-        if (this.staticSpeedUniform && params.staticSpeed !== undefined) {
-            this.staticSpeedUniform.value = params.staticSpeed;
-        }
-        if (this.staticContrastUniform && params.staticContrast !== undefined) {
-            this.staticContrastUniform.value = params.staticContrast;
-        }
         if (this.colorAttackUniform && params.colorAttack !== undefined) {
             this.colorAttackUniform.value = params.colorAttack;
         }
@@ -787,7 +621,7 @@ export class CRTScreenScene {
         if (this.powerFlashUniform && params.powerFlash !== undefined) {
             this.powerFlashUniform.value = params.powerFlash;
         }
-        
+
         // Phosphor uniforms
         if (this.slotDutyXUniform && params.slotDutyX !== undefined) {
             this.slotDutyXUniform.value = params.slotDutyX;
@@ -801,19 +635,7 @@ export class CRTScreenScene {
         if (this.phosphorTintUniform && params.phosphorTint !== undefined) {
             this.phosphorTintUniform.value = params.phosphorTint;
         }
-        if (this.moireStrengthUniform && params.moireStrength !== undefined) {
-            this.moireStrengthUniform.value = params.moireStrength;
-        }
-        if (this.moireChromaUniform && params.moireChroma !== undefined) {
-            this.moireChromaUniform.value = params.moireChroma;
-        }
-        if (this.moireFeatherUniform && params.moireFeather !== undefined) {
-            this.moireFeatherUniform.value = params.moireFeather;
-        }
-        if (this.moireThresholdUniform && params.moireThreshold !== undefined) {
-            this.moireThresholdUniform.value = params.moireThreshold;
-        }
-        
+
         // Beam physics uniforms
         if (this.beamGammaUniform && params.beamGamma !== undefined) {
             this.beamGammaUniform.value = params.beamGamma;
@@ -846,9 +668,6 @@ export class CRTScreenScene {
         }
         
         // CRT uniforms
-        if (this.crtAmountUniform && params.crtAmount !== undefined) {
-            this.crtAmountUniform.value = params.crtAmount;
-        }
         if (this.crtBarrelUniform && params.crtBarrel !== undefined) {
             this.crtBarrelUniform.value = params.crtBarrel;
         }
@@ -860,9 +679,6 @@ export class CRTScreenScene {
         }
         if (this.crtZoomUniform && params.crtZoom !== undefined) {
             this.crtZoomUniform.value = params.crtZoom;
-        }
-        if (this.screenCurvatureUniform && params.screenCurvature !== undefined) {
-            this.screenCurvatureUniform.value = Math.max(0, params.screenCurvature);
         }
         
         // Bloom parameters
@@ -891,100 +707,21 @@ export class CRTScreenScene {
     }
 
     private applyDisplayMode(): void {
-        const mode = this.parameters.displayMode ?? 'video';
-        if (mode === 'static') {
-            this.useExternalContent = false;
-            if (this.useExternalContentUniform) {
-                this.useExternalContentUniform.value = 0.0;
-            }
-            if (this.useExternalTextureUniform) {
-                this.useExternalTextureUniform.value = 0.0;
-            }
-            if (this.shaderEnabledUniform) {
-                this.shaderEnabledUniform.value = 0.0;
-            }
-            this.clearVideoFrameCallback();
-            return;
-        }
-
-        if (mode === 'terminal') {
-            this.ensureContentCanvas();
-            this.ensureTerminalBuffer();
-            this.ensureTerminalFont();
-            this.useExternalContent = true;
-            if (this.useExternalContentUniform) {
-                this.useExternalContentUniform.value = 1.0;
-            }
-            if (this.useExternalTextureUniform) {
-                this.useExternalTextureUniform.value = 1.0;
-            }
-            if (this.shaderEnabledUniform) {
-                this.shaderEnabledUniform.value = 0.0;
-            }
-            this.terminalDirty = true;
-            this.terminalCursorVisible = true;
-            this.terminalCursorBlinkTime = 0;
-            this.clearVideoFrameCallback();
-            return;
-        }
-
-        if (mode === 'shader') {
-            this.ensureContentCanvas();
-            this.useExternalContent = true;
-            if (this.useExternalContentUniform) {
-                this.useExternalContentUniform.value = 1.0;
-            }
-            if (this.useExternalTextureUniform) {
-                this.useExternalTextureUniform.value = 0.0;
-            }
-            if (this.shaderEnabledUniform) {
-                this.shaderEnabledUniform.value = 1.0;
-            }
-            this.clearVideoFrameCallback();
-            return;
-        }
-
-        if (mode === 'xterm') {
-            this.ensureContentCanvas();
-            this.useExternalContent = true;
-            if (this.useExternalContentUniform) {
-                this.useExternalContentUniform.value = 1.0;
-            }
-            if (this.useExternalTextureUniform) {
-                this.useExternalTextureUniform.value = 1.0;
-            }
-            if (this.shaderEnabledUniform) {
-                this.shaderEnabledUniform.value = 0.0;
-            }
-            if (!this.contentSource && this.contentContext && this.contentCanvas) {
-                this.contentContext.fillStyle = '#000000';
-                this.contentContext.fillRect(0, 0, this.contentCanvas.width, this.contentCanvas.height);
-                if (this.contentTexture) {
-                    this.contentTexture.needsUpdate = true;
-                }
-            }
-            this.contentDirty = true;
-            this.clearVideoFrameCallback();
-            return;
-        }
-
-        const useExternal = !!this.contentSource;
-        this.useExternalContent = useExternal;
+        this.ensureContentCanvas();
+        this.ensureTerminalBuffer();
+        this.ensureTerminalFont();
+        this.useExternalContent = true;
         if (this.useExternalContentUniform) {
-            this.useExternalContentUniform.value = useExternal ? 1.0 : 0.0;
+            this.useExternalContentUniform.value = 1.0;
         }
         if (this.useExternalTextureUniform) {
-            this.useExternalTextureUniform.value = useExternal ? 1.0 : 0.0;
+            this.useExternalTextureUniform.value = 1.0;
         }
-        if (this.shaderEnabledUniform) {
-            this.shaderEnabledUniform.value = 0.0;
-        }
-        if (useExternal) {
-            this.contentDirty = true;
-        }
-        if (this.contentIsVideo && this.contentSource) {
-            this.setupVideoFrameCallback(this.contentSource as HTMLVideoElement);
-        }
+        this.terminalDirty = true;
+        this.terminalCursorVisible = true;
+        this.terminalCursorBlinkTime = 0;
+        this.clearVideoFrameCallback();
+        this.startDemoAnimation();
     }
 
     setContentSource(source: CanvasImageSource | null): void {
@@ -1084,52 +821,12 @@ export class CRTScreenScene {
     }
 
     private updateContentFrame(): void {
-        const mode = this.parameters.displayMode ?? 'video';
-        if (mode === 'terminal') {
-            this.ensureContentCanvas();
-            this.ensureTerminalBuffer();
-            this.ensureTerminalFont();
-            if (this.terminalDirty) {
-                this.renderTerminal();
-            }
-            return;
-        }
-
-        if (mode === 'shader') {
-            this.ensureContentCanvas();
-            this.renderShaderOverlay();
-            return;
-        }
-
-        const isVideoMode = mode === 'video' || mode === 'emulator';
-        const isXtermMode = mode === 'xterm';
-        if ((!isVideoMode && !isXtermMode) || !this.useExternalContent || !this.contentSource) {
-            return;
-        }
-
         this.ensureContentCanvas();
-        if (!this.contentContext || !this.contentCanvas) {
-            return;
+        this.ensureTerminalBuffer();
+        this.ensureTerminalFont();
+        if (this.terminalDirty) {
+            this.renderTerminal();
         }
-
-        if (this.contentIsVideo) {
-            const video = this.contentSource as HTMLVideoElement;
-            if (video.readyState < 2) {
-                return;
-            }
-            if (!this.contentDirty) {
-                return;
-            }
-        } else {
-            if (isXtermMode) {
-                this.contentDirty = true;
-            }
-            if (!this.contentDirty) {
-                return;
-            }
-        }
-
-        this.refreshContentFromSource();
     }
 
 
@@ -1161,9 +858,7 @@ export class CRTScreenScene {
         this.terminalDirty = true;
         this.terminalCursorX = 0;
         this.terminalCursorY = 0;
-        if ((this.parameters.displayMode ?? 'video') === 'terminal') {
-            this.ensureTerminalBuffer();
-        }
+        this.ensureTerminalBuffer();
     }
 
     private ensureTerminalBuffer(): void {
@@ -1217,32 +912,6 @@ export class CRTScreenScene {
             })
             .catch(() => {
                 this.terminalFontLoading = false;
-            });
-    }
-
-    private ensureShaderOverlayFont(): void {
-        if (this.shaderOverlayFontLoaded || this.shaderOverlayFontLoading) {
-            return;
-        }
-        if (typeof FontFace === 'undefined' || !document?.fonts) {
-            return;
-        }
-
-        this.shaderOverlayFontLoading = true;
-        const font = new FontFace(
-            this.shaderOverlayFontFamily,
-            'url(/fonts/oldschool_pc/Web437_CompaqThin_8x16.woff)'
-        );
-
-        font.load()
-            .then(loaded => {
-                document.fonts.add(loaded);
-                this.shaderOverlayFontLoaded = true;
-                this.shaderOverlayFontLoading = false;
-                this.contentDirty = true;
-            })
-            .catch(() => {
-                this.shaderOverlayFontLoading = false;
             });
     }
 
@@ -1444,13 +1113,175 @@ export class CRTScreenScene {
         this.terminalCursorBlinkTime = 0;
     }
 
-    handleTerminalKey(event: KeyboardEvent): void {
-        if ((this.parameters.displayMode ?? 'video') !== 'terminal') {
+    // ── Demo animation ──────────────────────────────────────────────────────
+
+    private startDemoAnimation(): void {
+        this.demoQueue = [];
+        this.demoCharIdx = 0;
+        this.demoCharTimer = 0;
+        this.demoLoopTimer = 0;
+        this.demoLoopFrame = 0;
+        this.demoActive = true;
+
+        const C = {
+            green:   0x33ff66,
+            cyan:    0x55ffff,
+            yellow:  0xffff55,
+            white:   0xffffff,
+            grey:    0x888888,
+            red:     0xff4444,
+            magenta: 0xff55ff,
+        };
+
+        const q = (text: string, color: number, delay = this.DEMO_CHAR_DELAY) => {
+            this.demoQueue.push({ text, color, delay });
+        };
+
+        // Boot header
+        q('╔══════════════════════════════════════════════╗\n', C.cyan, 0);
+        q('║  WebGPU CRT Terminal  v1.0  © 2025           ║\n', C.cyan, 0);
+        q('╚══════════════════════════════════════════════╝\n', C.cyan, 0);
+        q('\n', C.green, 0);
+
+        // BIOS-style system check lines
+        q('BIOS', C.yellow, 0.04);
+        q(' v2.11.0 ', C.white, 0.04);
+        q('initialising hardware...\n', C.grey, 0.03);
+        q('CPU  ', C.yellow, 0.0);
+        q('Three.js WebGPU Renderer ', C.white, 0.03);
+        q('[', C.grey, 0.0);
+        q('OK', C.green, 0.06);
+        q(']\n', C.grey, 0.0);
+        q('MEM  ', C.yellow, 0.0);
+        q('GPU Storage Buffers      ', C.white, 0.03);
+        q('[', C.grey, 0.0);
+        q('OK', C.green, 0.06);
+        q(']\n', C.grey, 0.0);
+        q('PHO  ', C.yellow, 0.0);
+        q('Phosphor Slot Mask       ', C.white, 0.03);
+        q('[', C.grey, 0.0);
+        q('OK', C.green, 0.06);
+        q(']\n', C.grey, 0.0);
+        q('BLM  ', C.yellow, 0.0);
+        q('Bloom Post-Processing    ', C.white, 0.03);
+        q('[', C.grey, 0.0);
+        q('OK', C.green, 0.06);
+        q(']\n', C.grey, 0.0);
+        q('SYS  ', C.yellow, 0.0);
+        q('TSL Compute Shaders      ', C.white, 0.03);
+        q('[', C.grey, 0.0);
+        q('OK', C.green, 0.06);
+        q(']\n', C.grey, 0.0);
+        q('\n', C.green, 0);
+        q('Loading CRT surface geometry..........', C.grey, 0.025);
+        q(' done\n', C.green, 0.0);
+        q('Calibrating beam scan parameters......', C.grey, 0.025);
+        q(' done\n', C.green, 0.0);
+        q('Warming up phosphor emitter...........', C.grey, 0.025);
+        q(' done\n', C.green, 0.0);
+        q('\n', C.green, 0);
+        q('┌─────────────────────────────────────────────┐\n', C.magenta, 0);
+        q('│  THREE.js r170+  WebGPU  TSL  Tweakpane     │\n', C.magenta, 0);
+        q('│  Subpixel rendering · Bloom · Beam physics  │\n', C.magenta, 0);
+        q('└─────────────────────────────────────────────┘\n', C.magenta, 0);
+        q('\n', C.green, 0);
+        q('System ready.\n', C.white, 0.05);
+        q('\n', C.green, 0);
+        q('C:\\> _', C.green, 0.05);
+    }
+
+    private encodeToCP437(text: string): number[] {
+        const codes: number[] = [];
+        for (const ch of text) {
+            if (ch === '\n') {
+                codes.push(0x0A);
+                continue;
+            }
+            const cp = ch.codePointAt(0) ?? 32;
+            const mapped = UNICODE_TO_CP437.get(cp);
+            if (mapped !== undefined) {
+                codes.push(mapped);
+            } else {
+                codes.push(63); // '?'
+            }
+        }
+        return codes;
+    }
+
+    private updateDemoAnimation(dt: number): void {
+        if (!this.demoActive) return;
+
+        // Phase 1: typewriter queue
+        if (this.demoCharIdx < this.demoQueue.length) {
+            const entry = this.demoQueue[this.demoCharIdx];
+            this.demoCharTimer += dt;
+            const codes = this.encodeToCP437(entry.text);
+            // How many characters to emit this frame
+            const charsToEmit = entry.delay <= 0
+                ? codes.length
+                : Math.floor(this.demoCharTimer / entry.delay);
+
+            if (charsToEmit > 0 && codes.length > 0) {
+                this.demoCharTimer = entry.delay <= 0 ? 0 : this.demoCharTimer % entry.delay;
+                const prevColor = this.terminalCurrentColor;
+                this.terminalCurrentColor = entry.color;
+                for (let i = 0; i < Math.min(charsToEmit, codes.length); i++) {
+                    const code = codes[i];
+                    if (code === 0x0A) {
+                        this.terminalCursorX = 0;
+                        this.terminalCursorY += 1;
+                        if (this.terminalCursorY >= this.getTerminalContentRows()) {
+                            this.scrollTerminal();
+                        }
+                    } else {
+                        this.writeTerminalChar(code);
+                    }
+                }
+                this.terminalCurrentColor = prevColor;
+                this.terminalDirty = true;
+
+                // If all chars emitted, advance queue
+                if (charsToEmit >= codes.length) {
+                    this.demoCharIdx++;
+                    this.demoCharTimer = 0;
+                }
+            }
             return;
         }
 
-        this.ensureTerminalBuffer();
-        this.ensureShaderOverlayFont();
+        // Phase 2: spinner/pulse after boot text is done
+        this.demoLoopTimer += dt;
+        if (this.demoLoopTimer >= this.DEMO_LOOP_INTERVAL) {
+            this.demoLoopTimer = 0;
+            this.demoLoopFrame++;
+            this.renderDemoSpinner();
+        }
+    }
+
+    private renderDemoSpinner(): void {
+        if (!this.terminalBuffer) return;
+        const spinChars = [179, 47, 196, 92]; // CP437: │ / ─ \
+        const frame = this.demoLoopFrame % spinChars.length;
+        // Find last character position (the '_' cursor after 'C:\> _')
+        // Replace it with spinner frame + underscore
+        const cols = this.getTerminalContentCols();
+        const rows = this.getTerminalContentRows();
+        const pad = this.terminalPaddingChars;
+        const row = Math.min(this.terminalCursorY, rows - 1);
+        const col = Math.max(0, this.terminalCursorX - 1);
+        const idx = (row + pad) * this.terminalCols + (col + pad);
+        if (this.terminalBuffer && idx >= 0 && idx < this.terminalBuffer.length) {
+            this.terminalBuffer[idx] = spinChars[frame];
+            if (this.terminalColorBuffer) {
+                this.terminalColorBuffer[idx] = 0x33ff66;
+            }
+            this.terminalDirty = true;
+        }
+        // suppress unused-warning for cols
+        void cols;
+    }
+
+    handleTerminalKey(event: KeyboardEvent): void {
 
         if (event.key === 'Backspace') {
             event.preventDefault();
@@ -1649,52 +1480,6 @@ export class CRTScreenScene {
         this.powerWarmupUniform.value = this.powerWarmup;
     }
 
-    private formatSignedValue(value: number, digits = 2): string {
-        const snapped = Math.abs(value) < 1e-6 ? 0 : value;
-        const sign = snapped >= 0 ? '+' : '-';
-        return `${sign}${Math.abs(snapped).toFixed(digits)}`;
-    }
-
-    private renderShaderOverlay(): void {
-        if (!this.contentCanvas || !this.contentContext) {
-            return;
-        }
-        const ctx = this.contentContext;
-        ctx.save();
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, this.contentCanvas.width, this.contentCanvas.height);
-        ctx.restore();
-
-        if ((this.parameters.shaderType ?? 'mandelbrot') !== 'julia') {
-            if (this.contentTexture) {
-                this.contentTexture.needsUpdate = true;
-            }
-            return;
-        }
-
-        this.ensureTerminalFont();
-        const cReal = this.parameters.juliaCReal ?? -0.8;
-        const cImag = this.parameters.juliaCImag ?? 0.156;
-        const centerX = this.parameters.juliaPanX ?? 0.0;
-        const centerY = this.parameters.juliaPanY ?? 0.0;
-        const line = `c=${this.formatSignedValue(cReal)} ${this.formatSignedValue(cImag)}i  X=${this.formatSignedValue(centerX)} Y=${this.formatSignedValue(centerY)}`;
-        const fontSize = Math.max(10, Math.round(this.logicalHeight * 0.07));
-        const padX = Math.round(this.contentCanvas.width * 0.5);
-        const padY = Math.max(6, Math.round(this.logicalHeight * 0.02));
-        ctx.save();
-        ctx.font = `${fontSize}px '${this.shaderOverlayFontFamily}', monospace`;
-        ctx.fillStyle = 'rgba(255, 255, 255, 1.0)';
-        ctx.textBaseline = 'top';
-        ctx.textAlign = 'center';
-        ctx.imageSmoothingEnabled = false;
-        ctx.fillText(line, padX, padY);
-        ctx.restore();
-
-        if (this.contentTexture) {
-            this.contentTexture.needsUpdate = true;
-        }
-    }
-
     dispose(): void {
         this.cleanup();
     }
@@ -1712,14 +1497,11 @@ export class CRTScreenScene {
         
         // Initialize CPU-side target array (only updated when content changes)
         this.targetColorArray = new Float32Array(totalPixels * 3);
-        
+
         // Create GPU storage buffers
         this.currentColors = instancedArray(totalSubpixels, 'vec3');
         this.targetColors = instancedArray(this.targetColorArray, 'vec3');
-        
-        // Initialize static pattern uniforms
-        this.staticSpeedUniform = uniform(this.parameters.staticSpeed ?? 15.0, 'float');
-        this.staticContrastUniform = uniform(this.parameters.staticContrast ?? 0.2, 'float');
+
         if (!this.minBrightnessUniform) {
             this.minBrightnessUniform = uniform(this.parameters.minBrightness ?? 0.1, 'float');
         } else {
@@ -1737,62 +1519,7 @@ export class CRTScreenScene {
         }
         this.useExternalContentUniform = uniform(this.useExternalContent ? 1.0 : 0.0, 'float');
         this.useExternalTextureUniform = uniform(this.useExternalContent ? 1.0 : 0.0, 'float');
-        const activeShader = this.getActiveShaderParams();
-        this.shaderPanXUniform = uniform(activeShader.panX, 'float');
-        this.shaderPanYUniform = uniform(activeShader.panY, 'float');
-        this.shaderZoomUniform = uniform(Math.max(0.0001, activeShader.zoom), 'float');
-        this.shaderEnabledUniform = uniform((this.parameters.displayMode ?? 'video') === 'shader' ? 1.0 : 0.0, 'float');
-        this.shaderTypeUniform = uniform((this.parameters.shaderType ?? 'mandelbrot') === 'julia' ? 1.0 : 0.0, 'float');
-        this.shaderJuliaCUniform = uniform(
-            new THREE.Vector2(this.parameters.juliaCReal ?? -0.8, this.parameters.juliaCImag ?? 0.156),
-            'vec2'
-        );
 
-        const shaderComputeFn = Fn(() => {
-            const idx = instanceIndex;
-            const screenWidthF = float(screenWidth);
-            const screenHeightF = float(screenHeight);
-            const pixelX = idx.modInt(uint(screenWidth));
-            const pixelY = idx.div(uint(screenWidth));
-            const shaderUV = vec2(
-                pixelX.toFloat().add(float(0.5)).div(screenWidthF),
-                pixelY.toFloat().add(float(0.5)).div(screenHeightF)
-            );
-
-            const zoom = max(this.shaderZoomUniform, float(0.0001));
-            const viewWidth = float(3.5).div(zoom);
-            const viewHeight = viewWidth.mul(screenHeightF.div(screenWidthF));
-            const center = vec2(this.shaderPanXUniform, this.shaderPanYUniform);
-            const coord = center.add(shaderUV.sub(float(0.5)).mul(vec2(viewWidth, viewHeight)));
-            const juliaMix = clamp(this.shaderTypeUniform, 0.0, 1.0);
-            const c = mix(coord, this.shaderJuliaCUniform, juliaMix);
-            const z = mix(vec2(0.0), coord, juliaMix).toVar();
-            const iter = float(0.0).toVar();
-            const maxIter = float(CRTScreenScene.SHADER_MAX_ITER);
-
-            Loop({ start: 0, end: CRTScreenScene.SHADER_MAX_ITER, type: 'int' }, () => {
-                const x2 = z.x.mul(z.x);
-                const y2 = z.y.mul(z.y);
-                If(x2.add(y2).greaterThan(float(4.0)), () => {
-                    Break();
-                });
-                z.assign(vec2(x2.sub(y2).add(c.x), z.x.mul(z.y).mul(float(2.0)).add(c.y)));
-                iter.addAssign(1.0);
-            });
-
-            const inSet = iter.greaterThanEqual(maxIter);
-            const band = floor(iter).mod(float(8.0));
-            const tBand = band.div(float(7.0));
-            const r = clamp(float(1.5).sub(abs(tBand.mul(float(4.0)).sub(float(3.0)))), 0.0, 1.0);
-            const g = clamp(float(1.5).sub(abs(tBand.mul(float(4.0)).sub(float(2.0)))), 0.0, 1.0);
-            const b = clamp(float(1.5).sub(abs(tBand.mul(float(4.0)).sub(float(1.0)))), 0.0, 1.0);
-            const bandColor = vec3(r, g, b);
-            const finalColor = select(inSet, vec3(0.0), bandColor);
-            this.targetColors.element(idx).assign(finalColor);
-        });
-
-        this.shaderComputeNode = shaderComputeFn().compute(totalPixels);
-        
         // Initialize beam scan uniforms
         this.scanFramerateUniform = uniform(this.parameters.scanFramerate ?? 30, 'float');
         this.scanHeadUniform = uniform(0, 'float');
@@ -1861,81 +1588,17 @@ export class CRTScreenScene {
             const xCover = float(1.0).sub(edgeX);
             const yCover = float(1.0).sub(edgeY);
             const inActiveFactor = xCover.mul(yCover);
-            
-            // Generate TV static pattern using hash for true per-pixel randomness
-            // Use quantized time for authentic static that updates in discrete frames
-            const quantizedTime = floor(this.timeUniform.mul(this.staticSpeedUniform));
-            
-            // Create unique seed for each pixel at each time step
-            // Combine pixel coordinates and time into a single seed value
-            // Large prime multipliers ensure no correlation between adjacent pixels
-            const seed1 = pixelX.mul(uint(73856093))
-                .bitXor(pixelY.mul(uint(19349663)))
-                .bitXor(quantizedTime.toUint().mul(uint(83492791)));
-            
-            // Generate three independent random values using hash function
-            // Each with a different offset to ensure independence
-            const random = hash(seed1.toFloat());
-            const random2 = hash(seed1.add(uint(1)).toFloat());
-            const random3 = hash(seed1.add(uint(2)).toFloat());
-            
-            // TV static is typically black and white with sharp transitions
-            const threshold = float(0.5);
-            const staticValue = select(
-                random.lessThan(threshold),
-                float(0.0),  // Black
-                float(1.0)   // White
-            );
-            
-            // Mix in some gray values based on contrast parameter
-            // staticContrast controls the ratio of pure black/white vs gray
-            const finalValue = select(
-                random2.lessThan(this.staticContrastUniform),
-                random3,     // Gray value (using third random for variety)
-                staticValue  // Pure black or white
-            );
-            
-            // Add slight overall brightness variation for organic feel
-            const brightness = finalValue.mul(float(0.9).add(random3.mul(0.1)));
-            
-            // Create monochrome color (same value for R, G, B)
-            // Real TV static is grayscale
-            const fullColor = vec3(brightness, brightness, brightness);
-            
-            // Extract single channel based on subpixel type
-            const staticIntensity = select(
-                subpixelIdx.equal(uint(0)), fullColor.r,
-                select(subpixelIdx.equal(uint(1)), fullColor.g, fullColor.b)
-            );
 
-            // External target color (per logical pixel)
-            const pixelIndex = pixelY.mul(uint(screenWidth)).add(pixelX);
-            const targetFullColor = this.targetColors.element(pixelIndex);
-
+            // Sample content texture for terminal display
             const contentUV = vec2(
                 pixelX.toFloat().add(float(0.5)).div(screenWidthF),
                 float(1.0).sub(pixelY.toFloat().add(float(0.5)).div(screenHeightF))
             );
             const contentSample = texture(this.contentTexture, contentUV);
-
-            const overlayMask = clamp(contentSample.r, 0.0, 1.0)
-                .mul(this.shaderEnabledUniform)
-                .mul(this.shaderTypeUniform);
-            const bufferColor = mix(targetFullColor, vec3(1.0).sub(targetFullColor), overlayMask);
-            const bufferIntensity = select(
-                subpixelIdx.equal(uint(0)), bufferColor.r,
-                select(subpixelIdx.equal(uint(1)), bufferColor.g, bufferColor.b)
-            );
-
-            const contentIntensity = select(
+            const intensity = select(
                 subpixelIdx.equal(uint(0)), contentSample.r,
                 select(subpixelIdx.equal(uint(1)), contentSample.g, contentSample.b)
             );
-
-            const useTexture = this.useExternalTextureUniform.greaterThan(float(0.5));
-            const externalIntensity = select(useTexture, contentIntensity, bufferIntensity);
-            const useExternal = this.useExternalContentUniform.greaterThan(float(0.5));
-            const intensity = select(useExternal, externalIntensity, staticIntensity);
             
             // Create target color (single channel intensity, stored in all RGB for shader compatibility)
             const targetIntensity = intensity.add(this.minBrightnessUniform.mul(this.powerOnUniform));
@@ -2093,12 +1756,10 @@ export class CRTScreenScene {
         mat.depthTest = true;  // Keep depth testing on
         
         // CRT uniforms
-        this.crtAmountUniform = uniform(this.parameters.crtAmount ?? 0.5, 'float');
         this.crtBarrelUniform = uniform(this.parameters.crtBarrel ?? -0.07, 'float');
         this.crtKeystoneXUniform = uniform(this.parameters.crtKeystoneX ?? 0.0, 'float');
         this.crtKeystoneYUniform = uniform(this.parameters.crtKeystoneY ?? 0.0, 'float');
         this.crtZoomUniform = uniform(this.parameters.crtZoom ?? 0.97, 'float');
-        this.screenCurvatureUniform = uniform(this.parameters.screenCurvature ?? 0.0, 'float');
         this.brightnessUniform = uniform(this.parameters.brightness ?? 1.0, 'float');
 
         
@@ -2107,10 +1768,6 @@ export class CRTScreenScene {
         this.slotDutyYUniform = uniform(this.parameters.slotDutyY ?? 0.85, 'float');  // vertical fill
         this.subpixelFeatherUniform = uniform(this.parameters.subpixelFeather ?? 0.08, 'float');  // anti-aliasing
         this.phosphorTintUniform = uniform(this.parameters.phosphorTint ?? 0.15, 'float');  // secondary brightness
-        this.moireStrengthUniform = uniform(this.parameters.moireStrength ?? 1.0, 'float');
-        this.moireChromaUniform = uniform(this.parameters.moireChroma ?? 1.0, 'float');
-        this.moireFeatherUniform = uniform(this.parameters.moireFeather ?? 0.5, 'float');
-        this.moireThresholdUniform = uniform(this.parameters.moireThreshold ?? 2.0, 'float');
         this.screenLightModeUniform = uniform(0.0, 'float');
         
         // Beam physics uniforms
@@ -2148,13 +1805,8 @@ export class CRTScreenScene {
             const nx = uvNode.x.mul(float(2.0)).sub(float(1.0));
             const ny = uvNode.y.mul(float(2.0)).sub(float(1.0));
 
-            const screenK = this.screenCurvatureUniform;
-            const r2Screen = nx.mul(nx).add(ny.mul(ny));
-            const r4Screen = r2Screen.mul(r2Screen);
-            const screenFacRaw = float(1.0).add(screenK.mul(r2Screen)).add(screenK.mul(float(0.25)).mul(r4Screen));
-            const screenFac = clamp(screenFacRaw, 0.2, 5.0);
-            const nxScreen = nx.mul(screenFac);
-            const nyScreen = ny.mul(screenFac);
+            const nxScreen = nx;
+            const nyScreen = ny;
             const uvScreen = vec2(nxScreen.mul(0.5).add(0.5), nyScreen.mul(0.5).add(0.5));
             const edgeSoft = float(0.002);
             const insideX = smoothstep(float(0.0), edgeSoft, uvScreen.x)
@@ -2163,7 +1815,7 @@ export class CRTScreenScene {
                 .mul(smoothstep(float(0.0), edgeSoft, float(1.0).sub(uvScreen.y)));
             const inBounds = insideX.mul(insideY);
 
-            const projR2 = r2Screen;
+            const projR2 = nx.mul(nx).add(ny.mul(ny));
             const projR4 = projR2.mul(projR2);
             const k = this.crtBarrelUniform;
             const facRaw = float(1.0).add(k.mul(projR2)).add(k.mul(float(0.25)).mul(projR4));
@@ -2172,9 +1824,8 @@ export class CRTScreenScene {
             let dy = nyScreen.mul(fac);
             dx = dx.add(this.crtKeystoneXUniform.mul(nyScreen));
             dy = dy.add(this.crtKeystoneYUniform.mul(nxScreen));
-            const invAmt = float(1.0).sub(this.crtAmountUniform);
-            const nxFinalRaw = dx.mul(this.crtAmountUniform).add(nxScreen.mul(invAmt)).mul(this.crtZoomUniform);
-            const nyFinalRaw = dy.mul(this.crtAmountUniform).add(nyScreen.mul(invAmt)).mul(this.crtZoomUniform);
+            const nxFinalRaw = dx.mul(this.crtZoomUniform);
+            const nyFinalRaw = dy.mul(this.crtZoomUniform);
 
             const cornerR2 = float(2.0);
             const cornerR4 = cornerR2.mul(cornerR2);
@@ -2192,26 +1843,26 @@ export class CRTScreenScene {
 
             const cornerDxA = cornerAX.mul(cornerFac).add(this.crtKeystoneXUniform.mul(cornerAY));
             const cornerDyA = cornerAY.mul(cornerFac).add(this.crtKeystoneYUniform.mul(cornerAX));
-            const cornerNxA = cornerDxA.mul(this.crtAmountUniform).add(cornerAX.mul(invAmt)).mul(this.crtZoomUniform);
-            const cornerNyA = cornerDyA.mul(this.crtAmountUniform).add(cornerAY.mul(invAmt)).mul(this.crtZoomUniform);
+            const cornerNxA = cornerDxA.mul(this.crtZoomUniform);
+            const cornerNyA = cornerDyA.mul(this.crtZoomUniform);
             const cornerMaxA = max(abs(cornerNxA), abs(cornerNyA));
 
             const cornerDxB = cornerBX.mul(cornerFac).add(this.crtKeystoneXUniform.mul(cornerBY));
             const cornerDyB = cornerBY.mul(cornerFac).add(this.crtKeystoneYUniform.mul(cornerBX));
-            const cornerNxB = cornerDxB.mul(this.crtAmountUniform).add(cornerBX.mul(invAmt)).mul(this.crtZoomUniform);
-            const cornerNyB = cornerDyB.mul(this.crtAmountUniform).add(cornerBY.mul(invAmt)).mul(this.crtZoomUniform);
+            const cornerNxB = cornerDxB.mul(this.crtZoomUniform);
+            const cornerNyB = cornerDyB.mul(this.crtZoomUniform);
             const cornerMaxB = max(abs(cornerNxB), abs(cornerNyB));
 
             const cornerDxC = cornerCX.mul(cornerFac).add(this.crtKeystoneXUniform.mul(cornerCY));
             const cornerDyC = cornerCY.mul(cornerFac).add(this.crtKeystoneYUniform.mul(cornerCX));
-            const cornerNxC = cornerDxC.mul(this.crtAmountUniform).add(cornerCX.mul(invAmt)).mul(this.crtZoomUniform);
-            const cornerNyC = cornerDyC.mul(this.crtAmountUniform).add(cornerCY.mul(invAmt)).mul(this.crtZoomUniform);
+            const cornerNxC = cornerDxC.mul(this.crtZoomUniform);
+            const cornerNyC = cornerDyC.mul(this.crtZoomUniform);
             const cornerMaxC = max(abs(cornerNxC), abs(cornerNyC));
 
             const cornerDxD = cornerDX.mul(cornerFac).add(this.crtKeystoneXUniform.mul(cornerDY));
             const cornerDyD = cornerDY.mul(cornerFac).add(this.crtKeystoneYUniform.mul(cornerDX));
-            const cornerNxD = cornerDxD.mul(this.crtAmountUniform).add(cornerDX.mul(invAmt)).mul(this.crtZoomUniform);
-            const cornerNyD = cornerDyD.mul(this.crtAmountUniform).add(cornerDY.mul(invAmt)).mul(this.crtZoomUniform);
+            const cornerNxD = cornerDxD.mul(this.crtZoomUniform);
+            const cornerNyD = cornerDyD.mul(this.crtZoomUniform);
             const cornerMaxD = max(abs(cornerNxD), abs(cornerNyD));
 
             const cornerMax = max(max(cornerMaxA, cornerMaxB), max(cornerMaxC, cornerMaxD));
@@ -2284,10 +1935,10 @@ export class CRTScreenScene {
             const blueIntensity = rgbB.z;
 
             const subpixelCoord = uvScreen.mul(vec2(totalColumnsF, screenHeightF));
-            const safeR2 = max(r2Screen, float(0.000001));
+            const safeR2 = max(projR2, float(0.000001));
             const invLen = inverseSqrt(safeR2);
             const dirPre = vec2(nxScreen, nyScreen).mul(invLen);
-            const phaseShear = this.phaseShearAmountUniform.mul(sqrt(r2Screen)).mul(dirPre.x);
+            const phaseShear = this.phaseShearAmountUniform.mul(sqrt(projR2)).mul(dirPre.x);
             const subpixelCoordSheared = vec2(subpixelCoord.x.add(phaseShear), subpixelCoord.y);
 
             const subpixelIndexX = floor(subpixelCoordSheared.x);
@@ -2319,39 +1970,19 @@ export class CRTScreenScene {
 
             const uvLocal = fract(subpixelCoordSheared).sub(vec2(0.5, 0.5));
 
-            const dCoordX = max(abs(dFdx(subpixelCoordSheared.x)), abs(dFdy(subpixelCoordSheared.x)));
-            const dCoordY = max(abs(dFdx(subpixelCoordSheared.y)), abs(dFdy(subpixelCoordSheared.y)));
-            const gridFootprint = max(dCoordX, dCoordY);
-            const moireFeather = clamp(this.moireFeatherUniform, 0.0, 2.0);
-            const moireInput = gridFootprint.mul(this.moireThresholdUniform).add(moireFeather.mul(0.25));
-            const moireBlendRaw = smoothstep(float(0.15), float(0.9), moireInput);
-            const moireBlend = clamp(moireBlendRaw.mul(this.moireStrengthUniform), 0.0, 1.0);
-            const chromaBlend = clamp(moireBlend.mul(this.moireChromaUniform), 0.0, 1.0);
             const subpixelColor = tint.mul(intensity);
-            const triadColor = vec3(redIntensity, greenIntensity, blueIntensity).mul(inBoundsProjection).mul(beamWeight);
-            const tintedColor = mix(subpixelColor, triadColor, chromaBlend);
+            const tintedColor = subpixelColor;
 
             const slotDutyX = this.slotDutyXUniform;
             const slotDutyY = this.slotDutyYUniform;
             const feather = this.subpixelFeatherUniform;
-            const adaptiveFeatherX = feather;
-            const adaptiveFeatherY = feather;
-            const maxPadX = float(0.5).sub(slotDutyX.mul(0.5));
-            const maxPadY = float(0.5).sub(slotDutyY.mul(0.5));
-            const coverageBoost = moireFeather.mul(moireBlend).mul(float(0.15));
-            const coveragePadX = min(dCoordX.mul(moireBlend).mul(float(0.35)).add(coverageBoost), maxPadX);
-            const coveragePadY = min(dCoordY.mul(moireBlend).mul(float(0.35)).add(coverageBoost), maxPadY);
-            const halfSizeX = slotDutyX.mul(0.5).add(coveragePadX);
-            const halfSizeY = slotDutyY.mul(0.5).add(coveragePadY);
+            const halfSizeX = slotDutyX.mul(0.5);
+            const halfSizeY = slotDutyY.mul(0.5);
             const distX = halfSizeX.sub(abs(uvLocal.x));
             const distY = halfSizeY.sub(abs(uvLocal.y));
-            const maskX = smoothstep(float(0.0), adaptiveFeatherX, distX);
-            const maskY = smoothstep(float(0.0), adaptiveFeatherY, distY);
-            const coverBase = maskX.mul(maskY);
-            const coverExpanded = mix(coverBase, float(1.0), moireBlend);
-            const baseDuty = slotDutyX.mul(slotDutyY);
-            const dutyMix = mix(baseDuty, float(1.0), moireBlend);
-            const cover = coverExpanded.mul(baseDuty.div(max(dutyMix, float(0.0001))));
+            const maskX = smoothstep(float(0.0), feather, distX);
+            const maskY = smoothstep(float(0.0), feather, distY);
+            const cover = maskX.mul(maskY);
 
             const p = vec2(nxFinal, nyFinal);
             const rho2 = p.x.mul(p.x).add(p.y.mul(p.y));
@@ -2363,6 +1994,7 @@ export class CRTScreenScene {
 
             const lightPass = this.screenLightModeUniform;
             const baseColor = tintedColor.mul(cover);
+            const triadColor = vec3(redIntensity, greenIntensity, blueIntensity).mul(inBoundsProjection).mul(beamWeight);
             const finalColor = mix(baseColor, triadColor, lightPass);
 
             // B4: Burn-in — blend in ghost image from DataTexture
