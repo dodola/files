@@ -1934,10 +1934,10 @@ export class CRTScreenScene {
             const greenIntensity = rgbG.y;
             const blueIntensity = rgbB.z;
 
-            const subpixelCoord = uvScreen.mul(vec2(totalColumnsF, screenHeightF));
-            const safeR2 = max(projR2, float(0.000001));
+            const subpixelCoord = uvProjection.mul(vec2(totalColumnsF, screenHeightF));
+            const safeR2 = max(nxFinal.mul(nxFinal).add(nyFinal.mul(nyFinal)), float(0.000001));
             const invLen = inverseSqrt(safeR2);
-            const dirPre = vec2(nxScreen, nyScreen).mul(invLen);
+            const dirPre = vec2(nxFinal, nyFinal).mul(invLen);
             const phaseShear = this.phaseShearAmountUniform.mul(sqrt(projR2)).mul(dirPre.x);
             const subpixelCoordSheared = vec2(subpixelCoord.x.add(phaseShear), subpixelCoord.y);
 
