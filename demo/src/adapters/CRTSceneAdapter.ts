@@ -3,6 +3,19 @@ import type { Pane } from 'tweakpane';
 import type { IScene } from '../IScene';
 import { CRTScreenScene, type CRTScreenSceneParameters } from '../scenes/CRTScreenScene';
 
+const INITIAL_PARAMS: CRTScreenSceneParameters = {
+  displayMode: 'shader',
+  shaderType: 'mandelbrot',
+  brightness: 1.0,
+  bloomStrength: 0.8,
+  bloomRadius: 0.5,
+  bloomThreshold: 0.1,
+  crtAmount: 0.5,
+  crtBarrel: 0.2,
+  moireStrength: 0.3,
+  screenCurvature: 0.1,
+};
+
 export class CRTSceneAdapter implements IScene {
   private scene: CRTScreenScene | null = null;
   private renderer: WebGPURenderer | null = null;
@@ -16,11 +29,17 @@ export class CRTSceneAdapter implements IScene {
     this.renderer = new WebGPURenderer({ canvas, antialias: true });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(width, height);
-    await this.renderer.init();
 
-    this.scene = new CRTScreenScene();
-    await this.scene.init(canvas, this.renderer);
-    this.scene.updateParameters({ shaderType: 'mandelbrot', displayMode: 'shader' });
+    try {
+      await this.renderer.init();
+      this.scene = new CRTScreenScene();
+      await this.scene.init(canvas, this.renderer);
+      this.scene.updateParameters(INITIAL_PARAMS);
+    } catch (err) {
+      this.renderer.dispose();
+      this.renderer = null;
+      throw err;
+    }
 
     this.startLoop();
   }
@@ -50,18 +69,7 @@ export class CRTSceneAdapter implements IScene {
 
   buildPane(pane: Pane): void {
     if (!this.scene) return;
-    const params: CRTScreenSceneParameters = {
-      displayMode: 'shader',
-      shaderType: 'mandelbrot',
-      brightness: 1.0,
-      bloomStrength: 0.8,
-      bloomRadius: 0.5,
-      bloomThreshold: 0.1,
-      crtAmount: 0.5,
-      crtBarrel: 0.2,
-      moireStrength: 0.3,
-      screenCurvature: 0.1,
-    };
+    const params: CRTScreenSceneParameters = { ...INITIAL_PARAMS };
 
     const displayFolder = pane.addFolder({ title: 'Display' });
     displayFolder.addBinding(params, 'displayMode', {
