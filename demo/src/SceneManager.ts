@@ -3,6 +3,11 @@ import type { IScene } from './IScene';
 
 type SceneFactory = () => IScene;
 
+// Make Tweakpane panel scrollable when it exceeds the viewport height
+const style = document.createElement('style');
+style.textContent = `.tp-dfwv { max-height: 100dvh; display: flex; flex-direction: column; } .tp-rotv_b { overflow-y: auto; flex: 1 1 auto; min-height: 0; }`;
+document.head.appendChild(style);
+
 export class SceneManager {
   private currentScene: IScene | null = null;
   private currentPane: Pane | null = null;

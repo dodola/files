@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, PostProcessing } from 'three/webgpu';
-import { uniform, instanceIndex, Fn, float, vec3, vec4, vec2, uint, floor, clamp, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, abs, instancedArray, fract, dot, hash, modInt } from 'three/tsl';
+import { uniform, instanceIndex, Fn, float, vec3, vec4, vec2, uint, floor, clamp, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, abs, instancedArray, fract, hash, modInt } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -72,6 +72,8 @@ export interface CRTScreenSceneParameters {
     slotDutyY?: number;          // vertical subpixel fill (0.1-1.0)
     subpixelFeather?: number;    // edge softness for anti-aliasing
     phosphorTint?: number;       // secondary channel brightness (0-0.5)
+    pixelGapX?: number;          // extra gap between pixel triads (0=none, 0.5=max)
+    subpixelSpacingX?: number;   // spacing between R-G and G-B within a triad (0=packed, 0.5=spread)
     
     // Beam physics
     beamGamma?: number;          // beam falloff exponent
@@ -167,6 +169,8 @@ export class CRTScreenScene {
     private slotDutyYUniform: any = null;
     private subpixelFeatherUniform: any = null;
     private phosphorTintUniform: any = null;
+    private pixelGapXUniform: any = null;
+    private subpixelSpacingXUniform: any = null;
     private screenLightModeUniform: any = null;
     
     // Beam physics uniforms
@@ -280,10 +284,12 @@ export class CRTScreenScene {
         powerOffDuration: 0.45,
         powerOffEndDuration: 0.0,
         powerFlash: 0.6,
-        slotDutyX: 0.65,             // 65% horizontal fill
-        slotDutyY: 0.68,             // 68% vertical fill
-        subpixelFeather: 0.08,
+        slotDutyX: 1.0,              // 100% horizontal fill (no gap)
+        slotDutyY: 1.0,              // 100% vertical fill (no gap)
+        subpixelFeather: 0.0,
         phosphorTint: 0.15,
+        pixelGapX: 0.0,
+        subpixelSpacingX: 0.0,
         colorAttack: 20.0,    // Fast attack for responsive color changes
         colorDecay: 15.0,     // Slower decay for smooth fading
         beamGamma: 1.6,
@@ -527,6 +533,8 @@ export class CRTScreenScene {
         this.useExternalContentUniform = null;
         this.useExternalTextureUniform = null;
         this.screenLightModeUniform = null;
+        this.pixelGapXUniform = null;
+        this.subpixelSpacingXUniform = null;
         this.contentCanvas = null;
         this.contentContext = null;
         if (this.contentTexture) {
@@ -634,6 +642,12 @@ export class CRTScreenScene {
         }
         if (this.phosphorTintUniform && params.phosphorTint !== undefined) {
             this.phosphorTintUniform.value = params.phosphorTint;
+        }
+        if (this.pixelGapXUniform && params.pixelGapX !== undefined) {
+            this.pixelGapXUniform.value = params.pixelGapX;
+        }
+        if (this.subpixelSpacingXUniform && params.subpixelSpacingX !== undefined) {
+            this.subpixelSpacingXUniform.value = params.subpixelSpacingX;
         }
 
         // Beam physics uniforms
@@ -1764,10 +1778,12 @@ export class CRTScreenScene {
 
         
         // Phosphor uniforms - these control the visual gap/black matrix
-        this.slotDutyXUniform = uniform(this.parameters.slotDutyX ?? 0.65, 'float');  // horizontal fill
-        this.slotDutyYUniform = uniform(this.parameters.slotDutyY ?? 0.85, 'float');  // vertical fill
-        this.subpixelFeatherUniform = uniform(this.parameters.subpixelFeather ?? 0.08, 'float');  // anti-aliasing
+        this.slotDutyXUniform = uniform(this.parameters.slotDutyX ?? 1.0, 'float');  // horizontal fill
+        this.slotDutyYUniform = uniform(this.parameters.slotDutyY ?? 1.0, 'float');  // vertical fill
+        this.subpixelFeatherUniform = uniform(this.parameters.subpixelFeather ?? 0.0, 'float');  // anti-aliasing
         this.phosphorTintUniform = uniform(this.parameters.phosphorTint ?? 0.15, 'float');  // secondary brightness
+        this.pixelGapXUniform = uniform(this.parameters.pixelGapX ?? 0.3, 'float');
+        this.subpixelSpacingXUniform = uniform(this.parameters.subpixelSpacingX ?? 0.0, 'float');
         this.screenLightModeUniform = uniform(0.0, 'float');
         
         // Beam physics uniforms
@@ -1944,24 +1960,18 @@ export class CRTScreenScene {
             const subpixelIndexX = floor(subpixelCoordSheared.x);
             const subpixelIndexY = floor(subpixelCoordSheared.y);
             const clampedX = clamp(subpixelIndexX, float(0.0), totalColumnsF.sub(float(1.0)));
-            const clampedY = clamp(subpixelIndexY, float(0.0), screenHeightF.sub(float(1.0)));
             const columnIdx = clampedX.toUint();
             const subpixelIdx = columnIdx.modInt(uint(3));
             const isRed = subpixelIdx.equal(uint(0));
             const isGreen = subpixelIdx.equal(uint(1));
             const isBlue = subpixelIdx.equal(uint(2));
-            const beamCoord = uvProjection.mul(vec2(totalColumnsF, screenHeightF));
-            const beamLocal = fract(beamCoord).sub(vec2(0.5, 0.5));
-            const beamDist = sqrt(dot(beamLocal, beamLocal));
-            const beamRadius = float(0.35).add(this.subpixelFeatherUniform.mul(float(2.5)));
-            const beamWeight = smoothstep(beamRadius, float(0.0), beamDist);
 
             const channelIntensity = select(
                 isRed,
                 redIntensity,
                 select(isGreen, greenIntensity, blueIntensity)
             ).mul(inBoundsProjection);
-            const intensity = channelIntensity.mul(beamWeight);
+            const intensity = channelIntensity;
             const tint = vec3(
                 select(isRed, float(1.0), this.phosphorTintUniform),
                 select(isGreen, float(1.0), this.phosphorTintUniform),
@@ -1969,6 +1979,15 @@ export class CRTScreenScene {
             );
 
             const uvLocal = fract(subpixelCoordSheared).sub(vec2(0.5, 0.5));
+
+            // pixelGapX:  R→right, B→left  → closes inter-triad gap
+            // subpixelSpacingX: R→left, B→right → opens intra-triad gap
+            const gapShift = select(isRed,
+                this.pixelGapXUniform.mul(0.5).sub(this.subpixelSpacingXUniform.mul(0.5)),
+                select(isBlue,
+                    this.pixelGapXUniform.mul(-0.5).add(this.subpixelSpacingXUniform.mul(0.5)),
+                    float(0.0)));
+            const uvLocalAdjusted = vec2(uvLocal.x.add(gapShift), uvLocal.y);
 
             const subpixelColor = tint.mul(intensity);
             const tintedColor = subpixelColor;
@@ -1978,8 +1997,8 @@ export class CRTScreenScene {
             const feather = this.subpixelFeatherUniform;
             const halfSizeX = slotDutyX.mul(0.5);
             const halfSizeY = slotDutyY.mul(0.5);
-            const distX = halfSizeX.sub(abs(uvLocal.x));
-            const distY = halfSizeY.sub(abs(uvLocal.y));
+            const distX = halfSizeX.sub(abs(uvLocalAdjusted.x));
+            const distY = halfSizeY.sub(abs(uvLocalAdjusted.y));
             const maskX = smoothstep(float(0.0), feather, distX);
             const maskY = smoothstep(float(0.0), feather, distY);
             const cover = maskX.mul(maskY);
@@ -1994,7 +2013,7 @@ export class CRTScreenScene {
 
             const lightPass = this.screenLightModeUniform;
             const baseColor = tintedColor.mul(cover);
-            const triadColor = vec3(redIntensity, greenIntensity, blueIntensity).mul(inBoundsProjection).mul(beamWeight);
+            const triadColor = vec3(redIntensity, greenIntensity, blueIntensity).mul(inBoundsProjection);
             const finalColor = mix(baseColor, triadColor, lightPass);
 
             // B4: Burn-in — blend in ghost image from DataTexture
