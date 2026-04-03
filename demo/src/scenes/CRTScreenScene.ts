@@ -7,7 +7,7 @@
 
 import * as THREE from 'three/webgpu';
 import { WebGPURenderer, MeshBasicNodeMaterial, MeshStandardNodeMaterial, PostProcessing } from 'three/webgpu';
-import { uniform, instanceIndex, Fn, float, vec3, vec4, vec2, uint, floor, clamp, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, abs, instancedArray, fract, hash, modInt } from 'three/tsl';
+import { uniform, instanceIndex, Fn, float, vec3, vec4, vec2, uint, floor, clamp, uv, texture, select, pass, max, min, mrt, output, emissive, smoothstep, pow, sqrt, inverseSqrt, mix, abs, instancedArray, fract, hash, modInt, dFdx, dFdy } from 'three/tsl';
 import { bloom } from 'three/examples/jsm/tsl/display/BloomNode.js';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 
@@ -1995,12 +1995,20 @@ export class CRTScreenScene {
             const slotDutyX = this.slotDutyXUniform;
             const slotDutyY = this.slotDutyYUniform;
             const feather = this.subpixelFeatherUniform;
+
+            // Adaptive feather: suppress moiré when subpixel grid exceeds Nyquist limit
+            const ddxSubpixel = dFdx(subpixelCoordSheared);
+            const ddySubpixel = dFdy(subpixelCoordSheared);
+            const derivMag = sqrt(ddxSubpixel.x.mul(ddxSubpixel.x).add(ddxSubpixel.y.mul(ddxSubpixel.y))
+                .add(ddySubpixel.x.mul(ddySubpixel.x)).add(ddySubpixel.y.mul(ddySubpixel.y)));
+            const adaptiveFeather = max(feather, derivMag.mul(float(0.5)));
+
             const halfSizeX = slotDutyX.mul(0.5);
             const halfSizeY = slotDutyY.mul(0.5);
             const distX = halfSizeX.sub(abs(uvLocalAdjusted.x));
             const distY = halfSizeY.sub(abs(uvLocalAdjusted.y));
-            const maskX = smoothstep(float(0.0), feather, distX);
-            const maskY = smoothstep(float(0.0), feather, distY);
+            const maskX = smoothstep(float(0.0), adaptiveFeather, distX);
+            const maskY = smoothstep(float(0.0), adaptiveFeather, distY);
             const cover = maskX.mul(maskY);
 
             const p = vec2(nxFinal, nyFinal);
